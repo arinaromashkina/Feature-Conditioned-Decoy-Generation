@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from conditional_normalizing_flow import ConditionalNormalizingFlow
+from flows.conditional_normalizing_flow import ConditionalNormalizingFlow
 
 class SeparateClassFlows(nn.Module):
-    def __init__(self, num_classes=10, n_flows=4, feature_dim=feature_dim, hidden_dim=64):
+    def __init__(self, num_classes=10, n_flows=4, feature_dim=128, hidden_dim=64):
         super().__init__()
         self.num_classes = num_classes
         self.flows = nn.ModuleList([

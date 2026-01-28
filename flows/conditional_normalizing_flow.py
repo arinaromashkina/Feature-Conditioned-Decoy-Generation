@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from conditional_coupling_layer import ConditionalCouplingLayer
+from flows.conditional_coupling_layer import ConditionalCouplingLayer
 
 class ConditionalNormalizingFlow(nn.Module):    
     def __init__(self, n_flows=8, feature_dim=128, hidden_dim=64):

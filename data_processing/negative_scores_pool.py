@@ -1,3 +1,5 @@
+from torch.utils.data import DataLoader
+
 def collect_negative_scores(model, train_dataset, bool_multiclass=True, num_classes=10, device='cuda'):
     if bool_multiclass:
         negative_scores_pools = {i: [] for i in range(num_classes)}
@@ -12,7 +14,7 @@ def collect_negative_scores(model, train_dataset, bool_multiclass=True, num_clas
             features = model.get_features(images)
             scores = model.fc2(features)
             if bool_multiclass:
-                for class_idx in range(NUM_CLASSES):
+                for class_idx in range(num_classes):
                     neg_mask = labels != class_idx
                     if neg_mask.sum() > 0:
                         class_scores = scores[neg_mask, class_idx]
@@ -23,7 +25,7 @@ def collect_negative_scores(model, train_dataset, bool_multiclass=True, num_clas
                         class_scores = scores[neg_mask]
                         negative_scores_pools.append(class_scores.cpu())
     if bool_multiclass:
-        for class_idx in range(NUM_CLASSES):
+        for class_idx in range(num_classes):
             if negative_scores_pools[class_idx]:
                 negative_scores_pools[class_idx] = torch.cat(negative_scores_pools[class_idx]).numpy()
                 print(f"Class {class_idx}: collected {len(negative_scores_pools[class_idx])} negative scores")
