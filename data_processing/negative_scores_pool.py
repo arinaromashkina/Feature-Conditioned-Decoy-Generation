@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import DataLoader
 
 def collect_negative_scores(model, train_dataset, bool_multiclass=True, num_classes=10, device='cuda'):

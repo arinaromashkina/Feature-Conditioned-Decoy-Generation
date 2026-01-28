@@ -1,5 +1,7 @@
+import torch
 from torch.utils.data import DataLoader
 from torch.utils.data import DataLoader, Dataset
+import numpy as np
 
 class ScoreFeatureDataset(Dataset):
     def __init__(self, cnn_scores, features, target_decoy_scores, labels):
@@ -22,7 +24,7 @@ class ScoreFeatureDataset(Dataset):
             self.labels[idx]
         )
 
-def create_score_feature_dataset(dataset, cnn_model, negative_scores_pools, bool_multiclass=True):
+def create_score_feature_dataset(dataset, cnn_model, negative_scores_pools, bool_multiclass=True, device='cuda'):
     cnn_scores_list = []
     features_list = []
     target_decoy_list = []
@@ -31,7 +33,7 @@ def create_score_feature_dataset(dataset, cnn_model, negative_scores_pools, bool
     with torch.no_grad():
         data_loader = DataLoader(dataset, batch_size=64, shuffle=False)
         for batch_idx, (images, labels) in enumerate(data_loader):
-            images = images.to(DEVICE)
+            images = images.to(device)
             features = cnn_model.get_features(images)
             scores = cnn_model.fc2(features)
             scores_cpu = scores.cpu()
