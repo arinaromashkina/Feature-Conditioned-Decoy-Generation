@@ -147,3 +147,46 @@ def main():
 
 
 cnn_model, train_ds, test_ds, test_shifted_ds = main()
+
+print("Training separate flows for each class...")
+separate_flows = SeparateClassFlows(num_classes=NUM_CLASSES, n_flows=4, feature_dim=128, hidden_dim=64).to(DEVICE)
+separate_flows = separate_flows.train_separate(train_ds, epochs=3, lr=1e-3, device=DEVICE)
+test_cnn_scores, separate_decoy_scores, test_labels = separate_flows.generate_decoys(test_ds, device='cuda')
+test_shifted_cnn_scores, separate_shifted_decoy_scores, test_shifted_labels = separate_flows.generate_decoys(test_shifted_ds, device='cuda')
+
+
+from utils.visualize_distributions import plot_class_score_distributions, plot_dataset_comparison
+
+plot_class_score_distributions(
+        model_scores=test_cnn_scores,
+        decoy_scores=separate_decoy_scores,
+        labels=test_labels,
+        method_name="Separate flows for test data",
+        num_classes=10,
+        save_dir="distribution_plots",
+        save_prefix="mnist_multiclass_test",
+        show_plots=True
+    )
+
+plot_class_score_distributions(
+        model_scores=test_shifted_cnn_scores,
+        decoy_scores=separate_shifted_decoy_scores,
+        labels=test_shifted_labels,
+        method_name="Separate flows for shifted data",
+        num_classes=10,
+        save_dir="distribution_plots",
+        save_prefix="mnist_multiclass_shifted",
+        show_plots=True
+    )
+
+
+plot_dataset_comparison(
+    original_cnn_scores=test_cnn_scores,
+    shifted_cnn_scores=test_shifted_cnn_scores,
+    original_decoy_scores=separate_decoy_scores,
+    shifted_decoy_scores=separate_shifted_decoy_scores,
+    num_classes=NUM_CLASSES,
+    save_dir="comparison_plots",
+    save_prefix="mnist_multiclass",
+    show_plots=True
+)

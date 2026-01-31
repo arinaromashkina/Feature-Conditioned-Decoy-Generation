@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import numpy as np
 from flows.conditional_normalizing_flow import ConditionalNormalizingFlow
 
 class SeparateClassFlows(nn.Module):
@@ -28,7 +29,6 @@ class SeparateClassFlows(nn.Module):
         decoy_scores = torch.zeros(batch_size, self.num_classes).to(device)
         for class_idx in range(self.num_classes):
             decoy_scores[:, class_idx] = self.flows[class_idx].sample(features).squeeze()
-
         return decoy_scores
 
     def train_separate(self, score_dataset, epochs=20, lr=1e-3, device='cuda'):
@@ -66,12 +66,12 @@ class SeparateClassFlows(nn.Module):
         test_cnn_scores = []
         test_labels = []
         separate_decoy_scores = []
-        test_loader = DataLoader(test_ds, batch_size=256, shuffle=False)
+        test_loader = DataLoader(score_dataset, batch_size=256, shuffle=False)
 
         with torch.no_grad():
             for cnn_scores, features, target_decoy, labels in test_loader:
-                features = features.to(DEVICE)
-                decoy_scores = self.flows.sample(features)
+                features = features.to(device)
+                decoy_scores = self.sample(features)
                 separate_decoy_scores.append(decoy_scores.cpu().numpy())
                 test_cnn_scores.append(cnn_scores.cpu().numpy())
                 test_labels.append(labels.cpu().numpy())
