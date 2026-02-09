@@ -62,3 +62,69 @@ def create_score_feature_dataset(dataset, cnn_model, negative_scores_pools, bool
     all_target_decoy = torch.cat(target_decoy_list)
     all_labels = torch.cat(labels_list)
     return ScoreFeatureDataset(all_cnn_scores, all_features, all_target_decoy, all_labels)
+
+
+
+def create_score_feature_dataset_bcss(
+    data,
+    bool_multiclass=True,
+    device='cpu'
+):
+    cnn_scores_list = []
+    features_list = []
+    target_decoy_list = []
+    labels_list = []
+
+    total_preds = data['total_preds']
+    total_features = data['total_features']
+    classes = sorted(total_preds.keys())
+    num_classes = len(classes)
+    negative_scores_pools = {}
+
+    for c in classes:
+        neg_scores = []
+        for other_c in classes:
+            if other_c == c:
+                continue
+            neg_scores.append(total_preds[other_c][c]) 
+        negative_scores_pools[c] = torch.cat(neg_scores).cpu().numpy()
+
+    for c in classes:
+        preds = total_preds[c]           
+        feats = total_features[c]         
+        preds = preds.T                  
+        feats = feats.T                   
+
+        N_c = preds.shape[0]
+
+        labels = torch.full((N_c,), c, dtype=torch.long)
+
+        target_decoy_scores = preds.clone()
+
+        neg_pool = negative_scores_pools[c]
+
+        if len(neg_pool) == 0:
+            raise RuntimeError(f"No negative scores for class {c}")
+
+        random_neg_scores = np.random.choice(neg_pool, size=N_c)
+        target_decoy_scores[:, c] = torch.tensor(
+            random_neg_scores,
+            dtype=target_decoy_scores.dtype
+        )
+
+        cnn_scores_list.append(preds)
+        features_list.append(feats)
+        target_decoy_list.append(target_decoy_scores)
+        labels_list.append(labels)
+
+    all_cnn_scores = torch.cat(cnn_scores_list, dim=0)
+    all_features = torch.cat(features_list, dim=0)
+    all_target_decoy = torch.cat(target_decoy_list, dim=0)
+    all_labels = torch.cat(labels_list, dim=0)
+
+    return ScoreFeatureDataset(
+        all_cnn_scores,
+        all_features,
+        all_target_decoy,
+        all_labels
+    )

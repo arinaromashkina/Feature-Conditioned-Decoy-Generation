@@ -251,3 +251,248 @@ def plot_score_distributions_combined(model_scores_list, decoy_scores_list,
     plt.close(fig)
     
     return save_path
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+from pathlib import Path
+
+# Print numpy version
+print(np.__version__)
+np.set_printoptions(threshold=np.inf)
+
+# Set global font sizes for publication quality
+plt.rcParams.update({
+    'font.size': 14,           # Base font size
+    'axes.titlesize': 16,      # Axis titles
+    'axes.labelsize': 14,      # Axis labels
+    'xtick.labelsize': 12,     # X-axis tick labels
+    'ytick.labelsize': 12,     # Y-axis tick labels
+    'legend.fontsize': 10,     # Legend (increased from 10)
+    'figure.titlesize': 18     # Figure title
+})
+
+# Define global path for saving figures
+PATH = './figures/'
+Path(PATH).mkdir(exist_ok=True)
+
+
+def plot_score_distribution(train_scores, train_labels, test_scores, test_labels, 
+                            filename="score_distribution", title="Score Distribution Comparison",
+                            bins=50, xlim=None, show_kde=True):
+    """
+    Publication-quality visualization of score distributions for train and test sets.
+    
+    Parameters:
+    -----------
+    train_scores : array-like
+        Training set scores
+    train_labels : array-like
+        Training set labels (0 for negative, 1 for positive)
+    test_scores : array-like
+        Test set scores
+    test_labels : array-like
+        Test set labels (0 for negative, 1 for positive)
+    filename : str
+        Name for saved files (without extension)
+    title : str
+        Plot title
+    bins : int or array-like
+        Number of bins or bin edges for histograms
+    xlim : tuple or None
+        X-axis limits (min, max)
+    show_kde : bool
+        Whether to show KDE curves
+    """
+    plt.figure(figsize=(6, 4))  # Updated figure size
+    
+    # Convert to numpy arrays and flatten
+    train_scores = np.array(train_scores).flatten()
+    train_labels = np.array(train_labels).flatten()
+    test_scores = np.array(test_scores).flatten()
+    test_labels = np.array(test_labels).flatten()
+    
+    # Separate scores by class and dataset
+    train_neg = train_scores[train_labels == 0]
+    train_pos = train_scores[train_labels == 1]
+    test_neg = test_scores[test_labels == 0]
+    test_pos = test_scores[test_labels == 1]
+    
+    # Plot histograms with visible edges
+    plt.hist(train_neg, bins=bins, density=True, color='blue', 
+             alpha=0.3, label='Train Negative', edgecolor='blue', linewidth=0.5)
+    plt.hist(train_pos, bins=bins, density=True, color='red', 
+             alpha=0.3, label='Train Positive', edgecolor='red', linewidth=0.5)
+    plt.hist(test_neg, bins=bins, density=True, color='green', 
+             alpha=0.3, label='Test Negative', edgecolor='green', linewidth=0.5)
+    plt.hist(test_pos, bins=bins, density=True, color='orange', 
+             alpha=0.3, label='Test Positive', edgecolor='orange', linewidth=0.5)
+    
+    # Add KDE curves if needed
+    if show_kde:
+        all_scores = np.concatenate([train_scores, test_scores])
+        x_range = np.linspace(all_scores.min(), all_scores.max(), 200)
+        
+        if len(train_neg) > 1:
+            try:
+                kde_train_neg = stats.gaussian_kde(train_neg.flatten())
+                plt.plot(x_range, kde_train_neg(x_range), color='blue', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(train_pos) > 1:
+            try:
+                kde_train_pos = stats.gaussian_kde(train_pos.flatten())
+                plt.plot(x_range, kde_train_pos(x_range), color='red', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(test_neg) > 1:
+            try:
+                kde_test_neg = stats.gaussian_kde(test_neg.flatten())
+                plt.plot(x_range, kde_test_neg(x_range), color='green', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(test_pos) > 1:
+            try:
+                kde_test_pos = stats.gaussian_kde(test_pos.flatten())
+                plt.plot(x_range, kde_test_pos(x_range), color='orange', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+    
+    plt.xlabel('Scores')
+    plt.ylabel('Probability density')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    if xlim is not None:
+        plt.xlim(xlim)
+    
+    # Save in both formats
+    plt.savefig(PATH + filename + ".png", bbox_inches='tight', dpi=300)
+    plt.savefig(PATH + filename + ".pdf", bbox_inches='tight')
+    plt.show()
+
+
+def plot_score_distribution_with_decoys(train_scores, train_labels, 
+                                        test_scores, test_labels, 
+                                        test_decoy_scores,
+                                        filename="score_distribution_decoys", 
+                                        title="Score Distribution with Decoys",
+                                        bins=50, xlim=None, show_kde=True):
+    """
+    Publication-quality visualization including decoy scores for test set.
+    
+    Parameters:
+    -----------
+    train_scores : array-like
+        Training set scores
+    train_labels : array-like
+        Training set labels (0 for negative, 1 for positive)
+    test_scores : array-like
+        Test set scores
+    test_labels : array-like
+        Test set labels (0 for negative, 1 for positive)
+    test_decoy_scores : array-like
+        Decoy scores for test set
+    filename : str
+        Name for saved files (without extension)
+    title : str
+        Plot title
+    bins : int or array-like
+        Number of bins or bin edges for histograms
+    xlim : tuple or None
+        X-axis limits (min, max)
+    show_kde : bool
+        Whether to show KDE curves
+    """
+    plt.figure(figsize=(6, 4))  # Updated figure size
+    
+    # Convert to numpy arrays and flatten
+    train_scores = np.array(train_scores).flatten()
+    train_labels = np.array(train_labels).flatten()
+    test_scores = np.array(test_scores).flatten()
+    test_labels = np.array(test_labels).flatten()
+    test_decoy_scores = np.array(test_decoy_scores).flatten()
+    
+    # Separate scores by class and dataset
+    train_neg = train_scores[train_labels == 0]
+    train_pos = train_scores[train_labels == 1]
+    test_neg = test_scores[test_labels == 0]
+    test_pos = test_scores[test_labels == 1]
+    
+    # Plot histograms with visible edges
+    plt.hist(train_neg, bins=bins, density=True, color='green', 
+             alpha=0.3, label='Training -', edgecolor='green', linewidth=0.5)
+    plt.hist(train_pos, bins=bins, density=True, color='red', 
+             alpha=0.3, label='Training +', edgecolor='red', linewidth=0.5)
+    plt.hist(test_neg, bins=bins, density=True, color='purple', 
+             alpha=0.3, label='Test -', edgecolor='purple', linewidth=0.5)
+    plt.hist(test_pos, bins=bins, density=True, color='orange', 
+             alpha=0.3, label='Test +', edgecolor='orange', linewidth=0.5)
+    plt.hist(test_decoy_scores, bins=bins, density=True, color='dodgerblue', 
+             alpha=0.3, label='Test decoys', edgecolor='dodgerblue', linewidth=0.5)
+    
+    # Add KDE curves if needed
+    if show_kde:
+        all_scores = np.concatenate([train_scores, test_scores, test_decoy_scores])
+        x_range = np.linspace(all_scores.min(), all_scores.max(), 200)
+        
+        if len(train_neg) > 1:
+            try:
+                kde_train_neg = stats.gaussian_kde(train_neg.flatten())
+                plt.plot(x_range, kde_train_neg(x_range), color='green', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(train_pos) > 1:
+            try:
+                kde_train_pos = stats.gaussian_kde(train_pos.flatten())
+                plt.plot(x_range, kde_train_pos(x_range), color='red', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(test_neg) > 1:
+            try:
+                kde_test_neg = stats.gaussian_kde(test_neg.flatten())
+                plt.plot(x_range, kde_test_neg(x_range), color='purple', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(test_pos) > 1:
+            try:
+                kde_test_pos = stats.gaussian_kde(test_pos.flatten())
+                plt.plot(x_range, kde_test_pos(x_range), color='orange', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+        
+        if len(test_decoy_scores) > 1:
+            try:
+                kde_decoys = stats.gaussian_kde(test_decoy_scores.flatten())
+                plt.plot(x_range, kde_decoys(x_range), color='dodgerblue', 
+                        linewidth=2, linestyle='-')
+            except:
+                pass
+    
+    plt.xlabel('Discriminative scores')
+    plt.ylabel('Probability density')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    if xlim is not None:
+        plt.xlim(xlim)
+    
+    # Save in both formats
+    plt.savefig(PATH + filename + ".png", bbox_inches='tight', dpi=300)
+    plt.savefig(PATH + filename + ".pdf", bbox_inches='tight')
+    plt.show()
