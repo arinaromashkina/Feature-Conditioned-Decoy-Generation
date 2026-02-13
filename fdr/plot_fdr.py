@@ -213,3 +213,39 @@ def run_complete_fdr_analysis(test_cnn_scores, test_labels, separate_decoy_score
     print(f"{'='*80}\n")
 
     return all_results, all_summaries
+
+
+
+def plot_fdr_multiclass(df, filename="fdr_multiclass"):
+    """Plot FDR curves for multiclass classification"""
+    plt.figure(figsize=(6, 4))
+    
+    methods = [
+        ('q_values_mm', 'Mix-Max', 'blue', '-'),
+        ('q_values_ground_truth', 'Ground Truth', 'green', '-'),
+        ('q_values_bh_storey', 'BH (Storey π₀)', 'red', '--'),
+    ]
+    
+    for col_name, label, color, linestyle in methods:
+        if col_name in df.columns:
+            # Remove NaN values first
+            df_valid = df[~df[col_name].isna()].copy()
+            df_sorted = df_valid.sort_values(by=col_name, ascending=True).reset_index(drop=True)
+            
+            plt.plot(df_sorted[col_name], 
+                    np.arange(len(df_sorted)), 
+                    marker='none', linestyle=linestyle, 
+                    label=label, linewidth=2, color=color)
+    
+    plt.ylabel('Number of Discoveries')
+    plt.xlabel('Q-values')
+    plt.title('Multi-class FDR Control Methods')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.xlim(0, 1)
+    
+    plt.savefig("BCSS/" + filename + ".png", bbox_inches='tight', dpi=300)
+    plt.savefig("BCSS/" + filename + ".pdf", bbox_inches='tight')
+    plt.show()
+    
+    return plt

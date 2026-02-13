@@ -444,3 +444,194 @@ def plot_confusion_matrix_analysis(df, pi0, filename="confusion_matrix_analysis"
     plt.show()
     
     return df_cm
+
+
+def control_fdr_multiclass(model_scores, target_labels, decoy_scores,
+                           train_cnn_scores=None, train_labels=None,
+                           test_cnn_scores=None, num_classes=None):
+    """
+    Multi-class FDR control using Mix-Max method.
+    
+    Args:
+        model_scores: array of shape (n_samples, num_classes) - scores for each class
+        target_labels: array of shape (n_samples,) - true class labels
+        decoy_scores: array of shape (n_samples, num_classes) - decoy scores for each class
+    """
+    
+    n_samples = len(model_scores)
+    if num_classes is None:
+        num_classes = model_scores.shape[1]
+    
+    # Create dataframe with original index preserved
+    df = pd.DataFrame({
+        'original_index': np.arange(n_samples),
+        'label': target_labels
+    })
+    
+    # Add model scores and decoy scores for each class
+    for k in range(num_classes):
+        df[f'model_score_class_{k}'] = model_scores[:, k]
+        df[f'decoy_score_class_{k}'] = decoy_scores[:, k]
+    
+    # Compute max scores
+    df['max_model_score'] = model_scores.max(axis=1)
+    df['max_decoy_score'] = decoy_scores.max(axis=1)
+    df['predicted_class'] = model_scores.argmax(axis=1)
+    
+    # Overall max score (competition between all model scores and decoy scores)
+    df['max_score'] = df[['max_model_score', 'max_decoy_score']].max(axis=1)
+    
+    # Estimate π₀ for each class using Storey method
+    pi0_estimates = []
+    for k in range(num_classes):
+        # Get samples where this class is NOT the true class (negatives for class k)
+        neg_mask = (target_labels != k)
+        null_distribution_k = model_scores[neg_mask, k]
+        query_k = model_scores[:, k]
+        
+        # Compute p-values for class k
+        p_values_k = empirical_p_values(null_distribution_k, query_k)
+        
+        # Estimate π₀^k
+        pi0_k = estimate_pi0_storey(p_values_k)
+        pi0_estimates.append(pi0_k)
+        
+        # Store p-values for this class
+        df[f'p_value_class_{k}'] = p_values_k
+    
+    # Estimate overall π₀ = [1 - Σ(1 - π₀^k)]_{[0,1]}
+    pi0_overall = 1 - sum([(1 - pi0_k) for pi0_k in pi0_estimates])
+    pi0_overall = max(0.0, min(1.0, pi0_overall))  # Crop to [0,1]
+    
+    df['pi0_overall'] = pi0_overall
+    
+    # ============ GROUND TRUTH FDR ============
+    # Ground truth doesn't know about decoys!
+    # Sort only by max_model_score
+    df_sorted_gt = df.sort_values(by='max_model_score', ascending=False).reset_index(drop=True)
+    
+    num_incorrect = 0
+    num_total = 0
+    
+    fdr_gt_list = []
+    for index, row in df_sorted_gt.iterrows():
+        num_total += 1
+        # Check if prediction is correct
+        if row['predicted_class'] != row['label']:
+            num_incorrect += 1
+        
+        fdr_gt = num_incorrect / num_total
+        fdr_gt_list.append(fdr_gt)
+    
+    df_sorted_gt['fdr_gt'] = fdr_gt_list
+    
+    # Make monotone - идем с КОНЦА к НАЧАЛУ
+    q_values_gt = df_sorted_gt['fdr_gt'].values.copy()
+    for i in range(len(q_values_gt) - 2, -1, -1):  # от предпоследнего к первому
+        q_values_gt[i] = min(q_values_gt[i], q_values_gt[i + 1])
+    
+    df_sorted_gt['q_values_ground_truth'] = q_values_gt
+    
+    # ВАЖНО: маппим обратно используя original_index
+    gt_mapping = dict(zip(df_sorted_gt['original_index'], 
+                          df_sorted_gt['q_values_ground_truth']))
+    df['q_values_ground_truth'] = df['original_index'].map(gt_mapping)
+    
+    # ============ MIX-MAX FDR (TDC-like) ============
+    # Sort by max_score (this includes competition with decoys)
+    df_sorted_by_max = df.sort_values(by='max_score', ascending=False).reset_index(drop=True)
+    
+    # ВАЖНО: Сначала посчитаем cumulative counts идя СВЕРХУ ВНИЗ
+    num_decoy_wins_cumsum = []
+    num_target_wins_cumsum = []
+    decoy_count = 0
+    target_count = 0
+    
+    for index, row in df_sorted_by_max.iterrows():
+        if row['max_model_score'] >= row['max_decoy_score']:  # Target wins
+            target_count += 1
+        else:  # Decoy wins
+            decoy_count += 1
+        
+        num_decoy_wins_cumsum.append(decoy_count)
+        num_target_wins_cumsum.append(target_count)
+    
+    df_sorted_by_max['num_decoy_wins'] = num_decoy_wins_cumsum
+    df_sorted_by_max['num_target_wins'] = num_target_wins_cumsum
+    
+    # Теперь считаем FDR только для target wins
+    fdr_mm_list = []
+    for index, row in df_sorted_by_max.iterrows():
+        if row['max_model_score'] >= row['max_decoy_score']:  # Target wins
+            if row['num_target_wins'] > 0:
+                fdr_mm = (row['num_decoy_wins'] + 1.0) / row['num_target_wins']
+                fdr_mm_list.append(fdr_mm)
+            else:
+                fdr_mm_list.append(1.0)
+        else:  # Decoy wins
+            fdr_mm_list.append(np.nan)
+    
+    df_sorted_by_max['fdr_mm'] = fdr_mm_list
+    
+    # Make q-values monotone - ТОЛЬКО ДЛЯ TARGET WINS, идем с конца к началу
+    q_values_mm = df_sorted_by_max['fdr_mm'].values.copy()
+    
+    # Находим последний target win и начинаем с него
+    last_valid_idx = -1
+    for i in range(len(q_values_mm) - 1, -1, -1):
+        if not np.isnan(q_values_mm[i]):
+            last_valid_idx = i
+            break
+    
+    if last_valid_idx >= 0:
+        prev = q_values_mm[last_valid_idx]
+        for i in range(last_valid_idx - 1, -1, -1):
+            if not np.isnan(q_values_mm[i]):
+                q_values_mm[i] = min(prev, q_values_mm[i])
+                prev = q_values_mm[i]
+    
+    df_sorted_by_max['q_values_mm'] = q_values_mm
+    
+    print("\nMM Debug:")
+    print(f"First 30 samples (sorted by max_score DESC):")
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', 300)
+    print(df_sorted_by_max[['original_index', 'label', 'predicted_class', 'max_model_score', 
+                            'max_decoy_score', 'max_score', 'num_decoy_wins', 'num_target_wins',
+                            'fdr_mm', 'q_values_mm']].head(30))
+    
+    # После подсчета FDR
+    print(f"\nFirst target win index: {df_sorted_by_max[df_sorted_by_max['max_model_score'] >= df_sorted_by_max['max_decoy_score']].index[0] if len(df_sorted_by_max[df_sorted_by_max['max_model_score'] >= df_sorted_by_max['max_decoy_score']]) > 0 else 'None'}")
+
+    # Покажи первые несколько target wins
+    target_wins_df = df_sorted_by_max[df_sorted_by_max['max_model_score'] >= df_sorted_by_max['max_decoy_score']].head(20)
+    print("\nFirst 20 target wins:")
+    print(target_wins_df[['original_index', 'max_model_score', 'max_decoy_score', 'num_decoy_wins', 'num_target_wins', 'fdr_mm', 'q_values_mm']])
+    
+    # Map back to original order
+    mm_mapping = dict(zip(df_sorted_by_max['original_index'], 
+                          df_sorted_by_max['q_values_mm']))
+    df['q_values_mm'] = df['original_index'].map(mm_mapping)
+    
+    # ============ BH method ============
+    # Use decoys as null distribution
+    p_values_overall = []
+    for i in range(n_samples):
+        max_model = model_scores[i].max()
+        decoy_vals = decoy_scores[i]
+        p_val = (decoy_vals >= max_model).sum() / num_classes
+        p_values_overall.append(p_val)
+    
+    p_values_overall = np.array(p_values_overall)
+    df['p_value_overall'] = p_values_overall
+    df['q_values_bh_storey'] = benjamini_hochberg_storey(p_values_overall)
+    
+    print("\nQ-values statistics:")
+    print(f"GT q-values range: {df['q_values_ground_truth'].min():.4f} - {df['q_values_ground_truth'].max():.4f}")
+    print(f"MM q-values range: {df['q_values_mm'].min():.4f} - {df['q_values_mm'].max():.4f} (excluding NaN)")
+    print(f"MM NaN count: {df['q_values_mm'].isna().sum()}")
+    print(f"Samples with q < 0.1:")
+    print(f"  GT: {(df['q_values_ground_truth'] < 0.1).sum()}")
+    print(f"  MM: {(df['q_values_mm'] < 0.1).sum()}")
+    
+    return df, pi0_overall, pi0_estimates
