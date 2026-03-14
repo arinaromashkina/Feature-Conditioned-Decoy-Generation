@@ -30,12 +30,12 @@ print('Train loaded')
 
 print("Training separate flows for each class...")
 separate_flows = SeparateClassFlows(num_classes=NUM_CLASSES, n_flows=15, feature_dim=64, hidden_dim=64).to(DEVICE)
-# separate_flows = separate_flows.train_separate(train_ds, epochs=8, lr=1e-3, device=DEVICE)
+# separate_flows = separate_flows.train_separate(train_ds, epochs=15, lr=1e-4, device=DEVICE)
 # torch.save(separate_flows.state_dict(), 'BCSS/bcss_cond_flows_model.pth')
 separate_flows.load_state_dict(torch.load('BCSS/bcss_cond_flows_model.pth'))
 
 
-test_file_name = '../../../../blob/BCSS/test/TCGA-S3-AA10-DX1_xmin43039_ymin23986_MPP-0.2500.png.tensor'
+test_file_name = '../../../../blob/BCSS/test/TCGA-E2-A1LS-DX1_xmin39247_ymin47756_MPP-0.2500.png.tensor'
 test_data = torch.load(test_file_name, weights_only=False)
 features = test_data['features']
 predictions = test_data['predictions']
@@ -45,8 +45,81 @@ features = torch.flatten(features, start_dim=2).squeeze(0).T
 labels = torch.flatten(labels, start_dim=0)
 test_ds = ScoreFeatureDataset(predictions, features, predictions, labels)
 
+# Add the helper function
+def match_distributions_quantile(source, target):
+    source_sorted_idx = np.argsort(source)
+    target_sorted = np.sort(target)
+    n_source, n_target = len(source), len(target)
+    target_quantiles = np.interp(
+        np.arange(n_source) / (n_source - 1),
+        np.arange(n_target) / (n_target - 1),
+        target_sorted
+    )
+    output = np.empty_like(source)
+    output[source_sorted_idx] = target_quantiles
+    return output
 
-scores_flow, decoys_flow, labels_flow = separate_flows.generate_decoys(test_ds, device='cuda')
+
+def generate_calibrated_decoys(flows, test_ds, device='cuda'):
+    """Generate decoys with smart calibration"""
+    
+    scores_flow, decoys_flow, labels_flow = flows.generate_decoys(test_ds, device)
+    
+    for k in range(NUM_CLASSES):
+        test_scores_k = scores_flow[:, k]
+        decoys_k = decoys_flow[:, k]
+        
+        # Step 1: Match mean and std
+        test_mean = test_scores_k.mean()
+        test_std = test_scores_k.std()
+        decoy_mean = decoys_k.mean()
+        decoy_std = decoys_k.std()
+        
+        # Standardize then rescale
+        decoys_standardized = (decoys_k - decoy_mean) / (decoy_std + 1e-8)
+        decoys_rescaled = decoys_standardized * test_std + test_mean
+        
+        # Step 2: Clip to reasonable range (avoid extreme outliers)
+        test_min, test_max = np.percentile(test_scores_k, [0.1, 99.9])
+        decoy_min, decoy_max = test_min - 2*test_std, test_max + 2*test_std
+        decoys_rescaled = np.clip(decoys_rescaled, decoy_min, decoy_max)
+        
+        # Step 3: Fine-tune with quantile matching on tails
+        # This preserves the middle while fixing extreme values
+        low_threshold = np.percentile(test_scores_k, 10)
+        high_threshold = np.percentile(test_scores_k, 90)
+        
+        # Fix lower tail
+        low_mask = decoys_rescaled < low_threshold
+        if low_mask.sum() > 0:
+            target_low = test_scores_k[test_scores_k < low_threshold]
+            if len(target_low) > 10:
+                decoys_rescaled[low_mask] = match_distributions_quantile(
+                    decoys_rescaled[low_mask], target_low
+                )
+        
+        # Fix upper tail
+        high_mask = decoys_rescaled > high_threshold
+        if high_mask.sum() > 0:
+            target_high = test_scores_k[test_scores_k > high_threshold]
+            if len(target_high) > 10:
+                decoys_rescaled[high_mask] = match_distributions_quantile(
+                    decoys_rescaled[high_mask], target_high
+                )
+        
+        decoys_flow[:, k] = decoys_rescaled
+        
+        print(f"\nClass {k} calibration:")
+        print(f"  Test: mean={test_mean:.2f}, std={test_std:.2f}, range=[{test_scores_k.min():.2f}, {test_scores_k.max():.2f}]")
+        print(f"  Decoy before: mean={decoy_mean:.2f}, std={decoy_std:.2f}")
+        print(f"  Decoy after: mean={decoys_rescaled.mean():.2f}, std={decoys_rescaled.std():.2f}, range=[{decoys_rescaled.min():.2f}, {decoys_rescaled.max():.2f}]")
+    
+    return scores_flow, decoys_flow, labels_flow
+
+
+scores_flow, decoys_flow, labels_flow = generate_calibrated_decoys(separate_flows, test_ds, device='cuda')
+#scores_flow, decoys_flow, labels_flow = separate_flows.generate_decoys(test_ds, device='cuda')
+
 torch.save(scores_flow, 'scores_flow.pt')
 torch.save(decoys_flow, 'decoys_flow.pt')
 torch.save(labels_flow, 'labels_flow.pt')
