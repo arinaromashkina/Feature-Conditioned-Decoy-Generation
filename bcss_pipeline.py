@@ -19,9 +19,10 @@ from data_processing.score_feature_dataset import ScoreFeatureDataset, create_sc
 from data_processing.negative_scores_pool import collect_negative_scores
 from flows.separate_flows import SeparateClassFlows
 
-DEVICE = 'cuda'
+DEVICE = 'cuda:1'
 NUM_CLASSES = 5
-PATH_DATA = '../../../../blob/BCSS/training/bcss.medium.training.torch'
+
+PATH_DATA = '../../data/BCSS/training/bcss.mini.training.torch'
 
 
 data = torch.load(PATH_DATA)
@@ -29,13 +30,15 @@ train_ds = create_score_feature_dataset_bcss(data, DEVICE)
 print('Train loaded')
 
 print("Training separate flows for each class...")
-separate_flows = SeparateClassFlows(num_classes=NUM_CLASSES, n_flows=15, feature_dim=64, hidden_dim=64).to(DEVICE)
-# separate_flows = separate_flows.train_separate(train_ds, epochs=15, lr=1e-4, device=DEVICE)
-# torch.save(separate_flows.state_dict(), 'BCSS/bcss_cond_flows_model.pth')
-separate_flows.load_state_dict(torch.load('BCSS/bcss_cond_flows_model.pth'))
+separate_flows = SeparateClassFlows(num_classes=NUM_CLASSES, n_flows=11, feature_dim=64, hidden_dim=256).to(DEVICE)
+# separate_flows = separate_flows.train_separate(train_ds, epochs=25, lr=1e-4, device=DEVICE)
+# print('here trained')
+# torch.save(separate_flows.state_dict(), 'BCSS/bcss_cond_flows_model_mini_long.pth')
+separate_flows.load_state_dict(torch.load('BCSS/bcss_cond_flows_model_mini_long.pth'))
+print('uploaded')
 
 
-test_file_name = '../../../../blob/BCSS/test/TCGA-E2-A1LS-DX1_xmin39247_ymin47756_MPP-0.2500.png.tensor'
+test_file_name = '../../data/BCSS/test/TCGA-S3-AA10-DX1_xmin43039_ymin23986_MPP-0.2500.png.tensor'
 test_data = torch.load(test_file_name, weights_only=False)
 features = test_data['features']
 predictions = test_data['predictions']
@@ -45,80 +48,8 @@ features = torch.flatten(features, start_dim=2).squeeze(0).T
 labels = torch.flatten(labels, start_dim=0)
 test_ds = ScoreFeatureDataset(predictions, features, predictions, labels)
 
-# Add the helper function
-def match_distributions_quantile(source, target):
-    source_sorted_idx = np.argsort(source)
-    target_sorted = np.sort(target)
-    n_source, n_target = len(source), len(target)
-    target_quantiles = np.interp(
-        np.arange(n_source) / (n_source - 1),
-        np.arange(n_target) / (n_target - 1),
-        target_sorted
-    )
-    output = np.empty_like(source)
-    output[source_sorted_idx] = target_quantiles
-    return output
 
-
-def generate_calibrated_decoys(flows, test_ds, device='cuda'):
-    """Generate decoys with smart calibration"""
-    
-    scores_flow, decoys_flow, labels_flow = flows.generate_decoys(test_ds, device)
-    
-    for k in range(NUM_CLASSES):
-        test_scores_k = scores_flow[:, k]
-        decoys_k = decoys_flow[:, k]
-        
-        # Step 1: Match mean and std
-        test_mean = test_scores_k.mean()
-        test_std = test_scores_k.std()
-        decoy_mean = decoys_k.mean()
-        decoy_std = decoys_k.std()
-        
-        # Standardize then rescale
-        decoys_standardized = (decoys_k - decoy_mean) / (decoy_std + 1e-8)
-        decoys_rescaled = decoys_standardized * test_std + test_mean
-        
-        # Step 2: Clip to reasonable range (avoid extreme outliers)
-        test_min, test_max = np.percentile(test_scores_k, [0.1, 99.9])
-        decoy_min, decoy_max = test_min - 2*test_std, test_max + 2*test_std
-        decoys_rescaled = np.clip(decoys_rescaled, decoy_min, decoy_max)
-        
-        # Step 3: Fine-tune with quantile matching on tails
-        # This preserves the middle while fixing extreme values
-        low_threshold = np.percentile(test_scores_k, 10)
-        high_threshold = np.percentile(test_scores_k, 90)
-        
-        # Fix lower tail
-        low_mask = decoys_rescaled < low_threshold
-        if low_mask.sum() > 0:
-            target_low = test_scores_k[test_scores_k < low_threshold]
-            if len(target_low) > 10:
-                decoys_rescaled[low_mask] = match_distributions_quantile(
-                    decoys_rescaled[low_mask], target_low
-                )
-        
-        # Fix upper tail
-        high_mask = decoys_rescaled > high_threshold
-        if high_mask.sum() > 0:
-            target_high = test_scores_k[test_scores_k > high_threshold]
-            if len(target_high) > 10:
-                decoys_rescaled[high_mask] = match_distributions_quantile(
-                    decoys_rescaled[high_mask], target_high
-                )
-        
-        decoys_flow[:, k] = decoys_rescaled
-        
-        print(f"\nClass {k} calibration:")
-        print(f"  Test: mean={test_mean:.2f}, std={test_std:.2f}, range=[{test_scores_k.min():.2f}, {test_scores_k.max():.2f}]")
-        print(f"  Decoy before: mean={decoy_mean:.2f}, std={decoy_std:.2f}")
-        print(f"  Decoy after: mean={decoys_rescaled.mean():.2f}, std={decoys_rescaled.std():.2f}, range=[{decoys_rescaled.min():.2f}, {decoys_rescaled.max():.2f}]")
-    
-    return scores_flow, decoys_flow, labels_flow
-
-
-scores_flow, decoys_flow, labels_flow = generate_calibrated_decoys(separate_flows, test_ds, device='cuda')
-#scores_flow, decoys_flow, labels_flow = separate_flows.generate_decoys(test_ds, device='cuda')
+scores_flow, decoys_flow, labels_flow = separate_flows.generate_decoys(test_ds, device=DEVICE)
 
 torch.save(scores_flow, 'scores_flow.pt')
 torch.save(decoys_flow, 'decoys_flow.pt')
@@ -133,7 +64,7 @@ labels_flow = np.where(
 )
 print('Test loaded')
 
-def get_scores_from_ds(score_dataset, device='cuda'):
+def get_scores_from_ds(score_dataset, device=DEVICE):
     test_cnn_scores = []
     test_labels = []
     test_loader = DataLoader(score_dataset, batch_size=256, shuffle=False)
@@ -151,7 +82,13 @@ def get_scores_from_ds(score_dataset, device='cuda'):
 
 
 train_scores, train_labels = get_scores_from_ds(train_ds)
-print('got flat train scores!')
+
+# print('0 smaples', len(train_labels[train_labels==0]))
+# print('1 smaples', len(train_labels[train_labels==1]))
+# print('2 smaples', len(train_labels[train_labels==2]))
+# print('3 smaples', len(train_labels[train_labels==3]))
+# print('4 smaples', len(train_labels[train_labels==4]))
+# print('got flat train scores!')
 
 
 import numpy as np
@@ -376,27 +313,27 @@ for i in range(NUM_CLASSES):
     plot_score_distribution_with_decoys(train_scores[:, i], train_labels, 
                                         scores_flow[:, i], labels_flow, 
                                         decoys_flow[:, i],
-                                        filename=f"score_distribution_decoys_{i}", 
+                                        filename=f"score_distribution_decoys_mini_long_{i}", 
                                         title=f"Score Distribution with Decoys for class {i}",
                                         xlim=(-10, 10), show_kde=True, class_id=i)
 
 
 
-from fdr.fdr_control import control_fdr_multiclass
-from fdr.plot_fdr import plot_fdr_multiclass
+# from fdr.fdr_control import control_fdr_multiclass
+# from fdr.plot_fdr import plot_fdr_multiclass
 
-print('labels_flow', np.min(labels_flow), np.max(labels_flow))
-print(np.unique(labels_flow))
-for value in [0, 1, 2, 3, 4]:
-    print(value, len(labels_flow[labels_flow == value]), len(labels_flow[labels_flow == value]) / len(labels_flow))
-print('train_labels', np.min(train_labels), np.max(train_labels))
+# print('labels_flow', np.min(labels_flow), np.max(labels_flow))
+# print(np.unique(labels_flow))
+# for value in [0, 1, 2, 3, 4]:
+#     print(value, len(labels_flow[labels_flow == value]), len(labels_flow[labels_flow == value]) / len(labels_flow))
+# print('train_labels', np.min(train_labels), np.max(train_labels))
 
-print('start df flow')
-df, pi0_overall, pi0_estimates = control_fdr_multiclass(scores_flow, labels_flow, decoys_flow,
-                           train_cnn_scores=train_scores, train_labels=train_labels,
-                           test_cnn_scores=scores_flow, num_classes=5)
-print('finish df flow')
-print('pi0_overall', pi0_overall)
-print('pi0_estimates', pi0_estimates)
-plot_fdr_multiclass(df, filename="fdr_multiclass")
-print('end')
+# print('start df flow')
+# df, pi0_overall, pi0_estimates = control_fdr_multiclass(scores_flow, labels_flow, decoys_flow,
+#                            train_cnn_scores=train_scores, train_labels=train_labels,
+#                            test_cnn_scores=scores_flow, num_classes=5)
+# print('finish df flow')
+# print('pi0_overall', pi0_overall)
+# print('pi0_estimates', pi0_estimates)
+# plot_fdr_multiclass(df, filename="fdr_multiclass")
+# print('end')

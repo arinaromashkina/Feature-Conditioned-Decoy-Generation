@@ -1,0 +1,143 @@
+Train loaded
+Training separate flows for each class...
+
+Training flow for class 0...
+  Class 0, Epoch 1/25, Loss: -4.9730
+  Class 0, Epoch 2/25, Loss: -6.3271
+  Class 0, Epoch 3/25, Loss: -5.9087
+  Class 0, Epoch 4/25, Loss: -7.4962
+  Class 0, Epoch 5/25, Loss: -2.7825
+  Class 0, Epoch 6/25, Loss: -1.3238
+  Class 0, Epoch 7/25, Loss: -2.5231
+  Class 0, Epoch 8/25, Loss: -3.6559
+  Class 0, Epoch 9/25, Loss: -4.7471
+  Class 0, Epoch 10/25, Loss: -4.8585
+  Class 0, Epoch 11/25, Loss: -4.9272
+  Class 0, Epoch 12/25, Loss: -4.9708
+  Class 0, Epoch 13/25, Loss: -4.9907
+  Class 0, Epoch 14/25, Loss: -4.9990
+  Class 0, Epoch 15/25, Loss: -4.9876
+  Class 0, Epoch 16/25, Loss: -5.0380
+  Class 0, Epoch 17/25, Loss: -5.0344
+  Class 0, Epoch 18/25, Loss: -5.0594
+  Class 0, Epoch 19/25, Loss: -5.0770
+  Class 0, Epoch 20/25, Loss: -5.0666
+  Class 0, Epoch 21/25, Loss: -5.0818
+  Class 0, Epoch 22/25, Loss: -5.0933
+  Class 0, Epoch 23/25, Loss: -5.1006
+  Class 0, Epoch 24/25, Loss: -5.1043
+  Class 0, Epoch 25/25, Loss: -6.9623
+
+Training flow for class 1...
+  Class 1, Epoch 1/25, Loss: -4.8389
+  Class 1, Epoch 2/25, Loss: -6.0132
+  Class 1, Epoch 3/25, Loss: -6.7419
+  Class 1, Epoch 4/25, Loss: -6.7550
+  Class 1, Epoch 5/25, Loss: -6.7524
+  Class 1, Epoch 6/25, Loss: -7.1913
+  Class 1, Epoch 7/25, Loss: -7.4617
+  Class 1, Epoch 8/25, Loss: -7.8605
+  Class 1, Epoch 9/25, Loss: -7.9328
+  Class 1, Epoch 10/25, Loss: -7.9223
+  Class 1, Epoch 11/25, Loss: -8.2140
+  Class 1, Epoch 12/25, Loss: -8.0160
+  Class 1, Epoch 13/25, Loss: -8.1385
+  Class 1, Epoch 14/25, Loss: -8.3445
+  Class 1, Epoch 15/25, Loss: -8.2949
+  Class 1, Epoch 16/25, Loss: -8.3667
+  Class 1, Epoch 17/25, Loss: -8.3271
+  Class 1, Epoch 18/25, Loss: -7.9431
+  Class 1, Epoch 19/25, Loss: -8.1100
+  Class 1, Epoch 20/25, Loss: -8.0148
+  Class 1, Epoch 21/25, Loss: -8.4146
+  Class 1, Epoch 22/25, Loss: -8.3645
+  Class 1, Epoch 23/25, Loss: -8.1873
+  Class 1, Epoch 24/25, Loss: -8.4153
+  Class 1, Epoch 25/25, Loss: -8.1495
+
+Training flow for class 2...
+  Class 2, Epoch 1/25, Loss: -6.0406
+  Class 2, Epoch 2/25, Loss: -6.8894
+  Class 2, Epoch 3/25, Loss: -7.2811
+  Class 2, Epoch 4/25, Loss: -7.5072
+  Class 2, Epoch 5/25, Loss: -7.5248
+  Class 2, Epoch 6/25, Loss: -7.6402
+  Class 2, Epoch 7/25, Loss: -7.3163
+  Class 2, Epoch 8/25, Loss: -7.6327
+  Class 2, Epoch 9/25, Loss: -6.7980
+  Class 2, Epoch 10/25, Loss: -7.4288
+  Class 2, Epoch 11/25, Loss: -7.7367
+  Class 2, Epoch 12/25, Loss: -7.9250
+  Class 2, Epoch 13/25, Loss: -7.9014
+  Class 2, Epoch 14/25, Loss: -8.0282
+  Class 2, Epoch 15/25, Loss: -8.2605
+  Class 2, Epoch 16/25, Loss: -8.0807
+  Class 2, Epoch 17/25, Loss: -8.0195
+  Class 2, Epoch 18/25, Loss: -8.2435
+  Class 2, Epoch 19/25, Loss: -8.1889
+  Class 2, Epoch 20/25, Loss: -8.3197
+  Class 2, Epoch 21/25, Loss: -8.1946
+  Class 2, Epoch 22/25, Loss: -8.3898
+  Class 2, Epoch 23/25, Loss: -8.3274
+  Class 2, Epoch 24/25, Loss: -8.4098
+  Class 2, Epoch 25/25, Loss: -8.4121
+
+Training flow for class 3...
+  Class 3, Epoch 1/25, Loss: -5.0050
+  Class 3, Epoch 2/25, Loss: -6.5390
+  Class 3, Epoch 3/25, Loss: -6.7286
+  Class 3, Epoch 4/25, Loss: -6.7818
+  Class 3, Epoch 5/25, Loss: -7.1434
+  Class 3, Epoch 6/25, Loss: -6.8451
+  Class 3, Epoch 7/25, Loss: -6.7547
+  Class 3, Epoch 8/25, Loss: -6.3520
+  Class 3, Epoch 9/25, Loss: -7.1396
+  Class 3, Epoch 10/25, Loss: -6.9166
+  Class 3, Epoch 11/25, Loss: -7.1190
+  Class 3, Epoch 12/25, Loss: -6.6858
+  Class 3, Epoch 13/25, Loss: -7.7978
+  Class 3, Epoch 14/25, Loss: -5.4711
+  Class 3, Epoch 15/25, Loss: -6.5351
+  Class 3, Epoch 16/25, Loss: -6.8935
+  Class 3, Epoch 17/25, Loss: -7.2534
+  Class 3, Epoch 18/25, Loss: -7.2478
+  Class 3, Epoch 19/25, Loss: -7.2124
+  Class 3, Epoch 20/25, Loss: -6.9708
+  Class 3, Epoch 21/25, Loss: -7.2072
+  Class 3, Epoch 22/25, Loss: -7.0826
+  Class 3, Epoch 23/25, Loss: -6.7300
+  Class 3, Epoch 24/25, Loss: -6.9530
+  Class 3, Epoch 25/25, Loss: -6.8803
+
+Training flow for class 4...
+  Class 4, Epoch 1/25, Loss: -7.1770
+  Class 4, Epoch 2/25, Loss: -8.1322
+  Class 4, Epoch 3/25, Loss: -8.5531
+  Class 4, Epoch 4/25, Loss: -8.7249
+  Class 4, Epoch 5/25, Loss: -8.8043
+  Class 4, Epoch 6/25, Loss: -8.8671
+  Class 4, Epoch 7/25, Loss: -8.8714
+  Class 4, Epoch 8/25, Loss: -8.8544
+  Class 4, Epoch 9/25, Loss: -8.8998
+  Class 4, Epoch 10/25, Loss: -8.9018
+  Class 4, Epoch 11/25, Loss: -8.9902
+  Class 4, Epoch 12/25, Loss: -9.0056
+  Class 4, Epoch 13/25, Loss: -8.9889
+  Class 4, Epoch 14/25, Loss: -9.0319
+  Class 4, Epoch 15/25, Loss: -8.9878
+  Class 4, Epoch 16/25, Loss: -8.8225
+  Class 4, Epoch 17/25, Loss: -8.7397
+  Class 4, Epoch 18/25, Loss: -8.9383
+  Class 4, Epoch 19/25, Loss: -8.9601
+  Class 4, Epoch 20/25, Loss: -8.9023
+  Class 4, Epoch 21/25, Loss: -9.0286
+  Class 4, Epoch 22/25, Loss: -8.9988
+  Class 4, Epoch 23/25, Loss: -8.9645
+  Class 4, Epoch 24/25, Loss: -9.0163
+  Class 4, Epoch 25/25, Loss: -8.9813
+here trained
+uploaded
+Test loaded
+1.24.3
+/home/arina/miniconda3/lib/python3.11/site-packages/numpy/lib/histograms.py:883: RuntimeWarning: invalid value encountered in divide
+  return n/db/n.sum(), bin_edges
