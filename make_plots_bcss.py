@@ -171,35 +171,50 @@ try:
     import ot
     
     def predict_COT(source_logits, source_labels, target_logits):
-        """Confidence Optimal Transport - SOFTMAX NORMALIZED."""
+        """Confidence Optimal Transport - WORKS WITH PROBABILITY SIMPLEXES."""
         source_logits = _to_tensor(source_logits)
         source_labels = _to_tensor(source_labels).long()
         target_logits = _to_tensor(target_logits)
         
         num_classes = source_logits.shape[1]
         
-        # Apply softmax normalization
+        # Apply softmax normalization to get probability simplexes
         source_probs = torch.softmax(source_logits, dim=1)
         target_probs = torch.softmax(target_logits, dim=1)
         
+        # Source label distribution (empirical class distribution)
         source_label_dist = torch.nn.functional.one_hot(source_labels, num_classes).float().mean(0)
         
-        cost_matrix = torch.stack([
-            (target_probs - onehot).abs().sum(1)
-            for onehot in torch.eye(num_classes, device=target_logits.device)
-        ], dim=1) / 2
+        # Cost matrix: L1 distance from each target sample to each class simplex vertex
+        # For each target sample, compute distance to each one-hot class vector
+        # Shape: [n_target, num_classes]
+        eye_matrix = torch.eye(num_classes, device=target_logits.device)
+        cost_matrix = torch.cdist(target_probs, eye_matrix, p=1)  # L1 distance
         
-        uniform_dist = np.ones(len(target_probs)) / len(target_probs)
+        # Normalize target distribution (uniform over samples)
+        n_target = len(target_probs)
+        target_dist = np.ones(n_target) / n_target
+        
+        # Source distribution is the empirical label distribution
         source_dist = source_label_dist.cpu().numpy()
         cost_matrix_np = cost_matrix.cpu().numpy()
         
-        ot_plan = ot.emd(uniform_dist, source_dist, cost_matrix_np)
+        # Ensure distributions sum to 1
+        target_dist = target_dist / target_dist.sum()
+        source_dist = source_dist / source_dist.sum()
+        
+        # Solve optimal transport
+        ot_plan = ot.emd(target_dist, source_dist, cost_matrix_np)
         ot_cost = np.sum(ot_plan * cost_matrix_np)
         
+        # Source statistics (on probabilities)
         s_conf = source_probs.amax(1).mean().item()
         s_acc = (source_probs.argmax(1) == source_labels).float().mean().item()
         
+        # Confidence gap
         conf_gap = s_conf - s_acc
+        
+        # Error estimate
         err_est = ot_cost + conf_gap
         
         estimate = 1. - err_est
@@ -331,7 +346,7 @@ def control_fdr_mixmax(model_scores, target_labels, decoy_scores):
 
 
 def control_fdr_binary_then_combine(model_scores, target_labels, decoy_scores, 
-                                      method='min', use_bh=True):
+                                      method='min', use_bh=True, verbose=False):
     """Binary-then-Combine multi-class FDR control (LABEL-FREE) - OPTIMIZED."""
     n_samples = len(model_scores)
     num_classes = model_scores.shape[1]
@@ -339,9 +354,15 @@ def control_fdr_binary_then_combine(model_scores, target_labels, decoy_scores,
     # Preallocate array for q-values
     all_q_values = np.ones((n_samples, num_classes))
     
+    # Store diagnostics
+    pi0_estimates = []
+    pi0_true = []
+    
     # Step 1: Binary FDR control for each class - VECTORIZED
-    print("Computing binary FDR control for each class...")
-    for class_k in tqdm(range(num_classes)):
+    if verbose:
+        print("\nComputing binary FDR control for each class...")
+    
+    for class_k in range(num_classes):
         model_scores_k = model_scores[:, class_k]
         decoy_scores_k = decoy_scores[:, class_k]
         
@@ -351,8 +372,24 @@ def control_fdr_binary_then_combine(model_scores, target_labels, decoy_scores,
             q_values_k = benjamini_hochberg(p_values_k, pi0=pi0_k)
         else:
             q_values_k = calculate_fdr2_qvalues(model_scores_k, decoy_scores_k)
+            pi0_k = np.nan
         
         all_q_values[:, class_k] = q_values_k
+        
+        # Calculate TRUE pi0 for this class
+        predicted_class_k = model_scores.argmax(axis=1)
+        samples_predicted_as_k = (predicted_class_k == class_k)
+        if samples_predicted_as_k.sum() > 0:
+            true_pi0_k = 1 - (target_labels[samples_predicted_as_k] == class_k).mean()
+        else:
+            true_pi0_k = np.nan
+        
+        pi0_estimates.append(pi0_k)
+        pi0_true.append(true_pi0_k)
+        
+        if verbose:
+            print(f"  Class {class_k}: π₀_estimated={pi0_k:.3f}, π₀_true={true_pi0_k:.3f}, "
+                  f"n_predicted={samples_predicted_as_k.sum()}")
     
     # Step 2: Combine q-values - VECTORIZED
     predicted_classes = model_scores.argmax(axis=1)
@@ -389,7 +426,15 @@ def control_fdr_binary_then_combine(model_scores, target_labels, decoy_scores,
     gt_mapping = dict(zip(df_final_sorted['index'], df_final_sorted['q_values_ground_truth']))
     df_final['q_values_ground_truth'] = df_final['index'].map(gt_mapping)
     
-    return df_final, None
+    # Return diagnostics
+    diagnostics = {
+        'pi0_estimated': pi0_estimates,
+        'pi0_true': pi0_true,
+        'pi0_error': [abs(est - true) if not np.isnan(est) and not np.isnan(true) else np.nan 
+                      for est, true in zip(pi0_estimates, pi0_true)]
+    }
+    
+    return df_final, diagnostics
 
 
 print("✓ FDR control functions loaded (OPTIMIZED)")
@@ -583,6 +628,7 @@ test_files = glob.glob(test_folder + '*.tensor')
 print(f'Found {len(test_files)} test files')
 
 results = []
+pi0_diagnostics_all = []
 
 for test_file_name in tqdm(test_files, desc="Processing files"):
     NAME = os.path.basename(test_file_name)
@@ -625,10 +671,15 @@ for test_file_name in tqdm(test_files, desc="Processing files"):
     # --- BEST (ORACLE) ---
     best_acc = compute_best_gt_accuracy(model_scores, labels_np)
     
-    # --- OUR METHOD (BC-Min) ---
-    df_bc_min_bh, _ = control_fdr_binary_then_combine(
-        model_scores, labels_np, test_decoys, method='min', use_bh=True
+    # --- OUR METHOD (BC-Min) WITH DIAGNOSTICS ---
+    df_bc_min_bh, diagnostics = control_fdr_binary_then_combine(
+        model_scores, labels_np, test_decoys, method='min', use_bh=True, verbose=False
     )
+    
+    pi0_diagnostics_all.append({
+        'file': NAME,
+        **diagnostics
+    })
     
     pi0 = estimate_pi0_storey_from_df(df_bc_min_bh, 'q_values_binary_combined')
     df_method = compute_method_estimation_curve(
@@ -659,6 +710,96 @@ for test_file_name in tqdm(test_files, desc="Processing files"):
     })
 
 print(f"\n✓ Processed {len(results)} test images successfully")
+
+# ============================================================================
+# π₀ DIAGNOSTICS
+# ============================================================================
+
+print("\n" + "="*80)
+print("π₀ ESTIMATION DIAGNOSTICS")
+print("="*80)
+
+# Aggregate π₀ statistics across all images
+all_pi0_estimated = []
+all_pi0_true = []
+all_pi0_errors = []
+
+for diag in pi0_diagnostics_all:
+    for est, true, err in zip(diag['pi0_estimated'], diag['pi0_true'], diag['pi0_error']):
+        if not np.isnan(est) and not np.isnan(true):
+            all_pi0_estimated.append(est)
+            all_pi0_true.append(true)
+            all_pi0_errors.append(err)
+
+all_pi0_estimated = np.array(all_pi0_estimated)
+all_pi0_true = np.array(all_pi0_true)
+all_pi0_errors = np.array(all_pi0_errors)
+
+print(f"\nOverall π₀ Statistics (across all images and classes):")
+print(f"  Mean π₀ estimated: {all_pi0_estimated.mean():.3f} ± {all_pi0_estimated.std():.3f}")
+print(f"  Mean π₀ true:      {all_pi0_true.mean():.3f} ± {all_pi0_true.std():.3f}")
+print(f"  Mean π₀ error:     {all_pi0_errors.mean():.3f} ± {all_pi0_errors.std():.3f}")
+print(f"  Median π₀ error:   {np.median(all_pi0_errors):.3f}")
+
+# Per-class statistics
+print(f"\nπ₀ Statistics by Class:")
+print("-" * 60)
+for class_k in range(NUM_CLASSES):
+    class_pi0_est = []
+    class_pi0_true = []
+    
+    for diag in pi0_diagnostics_all:
+        if class_k < len(diag['pi0_estimated']):
+            est = diag['pi0_estimated'][class_k]
+            true = diag['pi0_true'][class_k]
+            if not np.isnan(est) and not np.isnan(true):
+                class_pi0_est.append(est)
+                class_pi0_true.append(true)
+    
+    if len(class_pi0_est) > 0:
+        class_pi0_est = np.array(class_pi0_est)
+        class_pi0_true = np.array(class_pi0_true)
+        class_error = np.abs(class_pi0_est - class_pi0_true)
+        
+        print(f"\nClass {class_k}:")
+        print(f"  π₀ estimated: {class_pi0_est.mean():.3f} ± {class_pi0_est.std():.3f}")
+        print(f"  π₀ true:      {class_pi0_true.mean():.3f} ± {class_pi0_true.std():.3f}")
+        print(f"  π₀ error:     {class_error.mean():.3f} ± {class_error.std():.3f}")
+
+# Correlation analysis
+print(f"\n" + "-" * 60)
+print("Correlation Analysis:")
+from scipy.stats import pearsonr, spearmanr
+
+if len(all_pi0_errors) > 1:
+    # Does π₀ error correlate with accuracy estimation error?
+    accuracy_errors = np.abs(results_df['ours_est'] - results_df['true_acc'])
+    
+    # Compute average π₀ error per image
+    image_pi0_errors = []
+    for diag in pi0_diagnostics_all:
+        errors = [e for e in diag['pi0_error'] if not np.isnan(e)]
+        if len(errors) > 0:
+            image_pi0_errors.append(np.mean(errors))
+        else:
+            image_pi0_errors.append(np.nan)
+    
+    image_pi0_errors = np.array(image_pi0_errors)
+    valid_mask = ~np.isnan(image_pi0_errors)
+    
+    if valid_mask.sum() > 1:
+        corr_pearson, p_pearson = pearsonr(
+            image_pi0_errors[valid_mask], 
+            accuracy_errors[valid_mask]
+        )
+        corr_spearman, p_spearman = spearmanr(
+            image_pi0_errors[valid_mask], 
+            accuracy_errors[valid_mask]
+        )
+        
+        print(f"  π₀ error vs Accuracy error:")
+        print(f"    Pearson:  r={corr_pearson:.3f}, p={p_pearson:.4f}")
+        print(f"    Spearman: ρ={corr_spearman:.3f}, p={p_spearman:.4f}")
 
 # ============================================================================
 # ANALYSIS AND PLOTTING
@@ -797,9 +938,396 @@ plt.savefig('figures/mean_error_comparison.pdf')
 plt.close()
 print("✓ Saved: mean_error_comparison.png/pdf")
 
+# Plot 5: π₀ Estimation Quality
+if len(all_pi0_estimated) > 0:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Scatter: Estimated vs True π₀
+    axes[0].scatter(all_pi0_true, all_pi0_estimated, alpha=0.5, s=30)
+    axes[0].plot([0, 1], [0, 1], 'r--', linewidth=2, label='Perfect estimation')
+    axes[0].set_xlabel('True π₀', fontweight='bold')
+    axes[0].set_ylabel('Estimated π₀', fontweight='bold')
+    axes[0].set_title('π₀ Estimation Quality', fontweight='bold')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_xlim(0, 1)
+    axes[0].set_ylim(0, 1)
+    
+    # Histogram: π₀ Errors
+    axes[1].hist(all_pi0_errors, bins=30, alpha=0.7, color='steelblue', edgecolor='black')
+    axes[1].axvline(np.mean(all_pi0_errors), color='red', linestyle='--', 
+                    linewidth=2, label=f'Mean: {np.mean(all_pi0_errors):.3f}')
+    axes[1].set_xlabel('|π₀_estimated - π₀_true|', fontweight='bold')
+    axes[1].set_ylabel('Count', fontweight='bold')
+    axes[1].set_title('π₀ Estimation Error Distribution', fontweight='bold')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('figures/pi0_diagnostics.png', dpi=300)
+    plt.savefig('figures/pi0_diagnostics.pdf')
+    plt.close()
+    print("✓ Saved: pi0_diagnostics.png/pdf")
+
+# Plot 6: π₀ Error vs Accuracy Error
+if len(image_pi0_errors) > 0 and valid_mask.sum() > 1:
+    fig, ax = plt.subplots(figsize=(7, 6))
+    
+    ax.scatter(image_pi0_errors[valid_mask], accuracy_errors[valid_mask], 
+               alpha=0.6, s=60, color='darkblue')
+    
+    # Add trend line
+    z = np.polyfit(image_pi0_errors[valid_mask], accuracy_errors[valid_mask], 1)
+    p = np.poly1d(z)
+    x_line = np.linspace(image_pi0_errors[valid_mask].min(), 
+                         image_pi0_errors[valid_mask].max(), 100)
+    ax.plot(x_line, p(x_line), "r--", alpha=0.8, linewidth=2, label='Linear fit')
+    
+    ax.set_xlabel('Mean π₀ Error (per image)', fontweight='bold')
+    ax.set_ylabel('Accuracy Estimation Error', fontweight='bold')
+    ax.set_title('π₀ Error vs Accuracy Error', fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    
+    # Add correlation text
+    ax.text(0.05, 0.95, 
+            f"Pearson: r={corr_pearson:.3f}\nSpearman: ρ={corr_spearman:.3f}",
+            transform=ax.transAxes, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7),
+            fontsize=11)
+    
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig('figures/pi0_vs_accuracy_error.png', dpi=300)
+    plt.savefig('figures/pi0_vs_accuracy_error.pdf')
+    plt.close()
+    print("✓ Saved: pi0_vs_accuracy_error.png/pdf")
+
 print("\n" + "="*80)
 print("ANALYSIS COMPLETE")
 print("="*80)
 print(f"\nResults saved to: figures/")
 print(f"Total images processed: {len(results_df)}")
 print(f"\nBest performing method: {mae_df.iloc[0]['Method']} (MAE: {mae_df.iloc[0]['MAE']:.4f})")
+
+# ============================================================================
+# DECOY QUALITY ANALYSIS (on a sample image for diagnostics)
+# ============================================================================
+
+
+"""
+Decoy Quality Diagnostics and Method Improvement Suggestions
+
+This script analyzes:
+1. Decoy score quality (separation from target scores)
+2. Decoy calibration (do decoys represent true negatives?)
+3. Suggestions for improving BC-Min method
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import ks_2samp, mannwhitneyu
+
+def analyze_decoy_quality(target_scores, decoy_scores, target_labels, predicted_labels):
+    """
+    Analyze the quality of decoy score generation.
+    
+    Returns diagnostics about:
+    - Score separation
+    - Distribution differences
+    - Class-specific quality
+    """
+    n_samples, n_classes = target_scores.shape
+    
+    print("\n" + "="*80)
+    print("DECOY QUALITY ANALYSIS")
+    print("="*80)
+    
+    diagnostics = {
+        'overall': {},
+        'per_class': []
+    }
+    
+    # Overall statistics
+    target_max = target_scores.max(axis=1)
+    decoy_max = decoy_scores.max(axis=1)
+    
+    print("\n1. OVERALL SCORE STATISTICS:")
+    print("-" * 60)
+    print(f"Target scores (max):")
+    print(f"  Mean: {target_max.mean():.3f}, Std: {target_max.std():.3f}")
+    print(f"  Median: {np.median(target_max):.3f}")
+    print(f"  Range: [{target_max.min():.3f}, {target_max.max():.3f}]")
+    
+    print(f"\nDecoy scores (max):")
+    print(f"  Mean: {decoy_max.mean():.3f}, Std: {decoy_max.std():.3f}")
+    print(f"  Median: {np.median(decoy_max):.3f}")
+    print(f"  Range: [{decoy_max.min():.3f}, {decoy_max.max():.3f}]")
+    
+    # Score separation
+    separation = target_max.mean() - decoy_max.mean()
+    print(f"\nScore Separation (target - decoy): {separation:.3f}")
+    
+    # Statistical tests
+    ks_stat, ks_pval = ks_2samp(target_max, decoy_max)
+    mw_stat, mw_pval = mannwhitneyu(target_max, decoy_max, alternative='greater')
+    
+    print(f"\nDistribution Tests:")
+    print(f"  KS test: stat={ks_stat:.3f}, p={ks_pval:.4e}")
+    print(f"  Mann-Whitney U: stat={mw_stat:.1f}, p={mw_pval:.4e}")
+    
+    diagnostics['overall'] = {
+        'target_mean': target_max.mean(),
+        'decoy_mean': decoy_max.mean(),
+        'separation': separation,
+        'ks_stat': ks_stat,
+        'ks_pval': ks_pval
+    }
+    
+    # Per-class analysis
+    print("\n2. PER-CLASS ANALYSIS:")
+    print("-" * 60)
+    
+    for class_k in range(n_classes):
+        print(f"\nClass {class_k}:")
+        
+        # Samples predicted as this class
+        mask_predicted = (predicted_labels == class_k)
+        
+        if mask_predicted.sum() == 0:
+            print(f"  No samples predicted as class {class_k}")
+            continue
+        
+        target_k = target_scores[mask_predicted, class_k]
+        decoy_k = decoy_scores[mask_predicted, class_k]
+        
+        # True positives vs false positives
+        mask_tp = (target_labels[mask_predicted] == class_k)
+        mask_fp = ~mask_tp
+        
+        n_tp = mask_tp.sum()
+        n_fp = mask_fp.sum()
+        
+        print(f"  Predicted as class {class_k}: {mask_predicted.sum()} samples")
+        print(f"    True Positives: {n_tp}")
+        print(f"    False Positives: {n_fp}")
+        print(f"    Precision: {n_tp / (n_tp + n_fp) if (n_tp + n_fp) > 0 else 0:.3f}")
+        
+        if n_tp > 0:
+            print(f"  Target scores (TP): mean={target_k[mask_tp].mean():.3f}, "
+                  f"std={target_k[mask_tp].std():.3f}")
+        if n_fp > 0:
+            print(f"  Target scores (FP): mean={target_k[mask_fp].mean():.3f}, "
+                  f"std={target_k[mask_fp].std():.3f}")
+        
+        print(f"  Decoy scores: mean={decoy_k.mean():.3f}, std={decoy_k.std():.3f}")
+        
+        # Key insight: Are FP target scores similar to decoys?
+        if n_fp > 0:
+            fp_target_mean = target_k[mask_fp].mean()
+            decoy_mean = decoy_k.mean()
+            decoy_quality = abs(fp_target_mean - decoy_mean)
+            print(f"  Decoy Quality (|FP_target - decoy|): {decoy_quality:.3f}")
+            print(f"    {'✓ GOOD' if decoy_quality < 0.5 else '✗ POOR'} - Decoys "
+                  f"{'well' if decoy_quality < 0.5 else 'poorly'} match FP scores")
+        
+        diagnostics['per_class'].append({
+            'class': class_k,
+            'n_predicted': mask_predicted.sum(),
+            'n_tp': n_tp,
+            'n_fp': n_fp,
+            'precision': n_tp / (n_tp + n_fp) if (n_tp + n_fp) > 0 else 0
+        })
+    
+    return diagnostics
+
+
+def suggest_improvements(diagnostics, mae_comparison):
+    """
+    Based on diagnostics, suggest improvements to the BC-Min method.
+    """
+    print("\n" + "="*80)
+    print("IMPROVEMENT SUGGESTIONS")
+    print("="*80)
+    
+    print("\n🔍 DIAGNOSIS:")
+    print("-" * 60)
+    
+    # Check decoy quality
+    separation = diagnostics['overall']['separation']
+    ks_pval = diagnostics['overall']['ks_pval']
+    
+    issues = []
+    
+    if separation < 1.0:
+        issues.append("LOW_SEPARATION")
+        print("⚠️  Issue: Low score separation between targets and decoys")
+        print(f"    Current separation: {separation:.3f}")
+        print(f"    Decoys may not adequately represent false positives")
+    
+    if ks_pval > 0.05:
+        issues.append("SIMILAR_DISTRIBUTIONS")
+        print("⚠️  Issue: Target and decoy distributions are too similar")
+        print(f"    KS test p-value: {ks_pval:.4f}")
+        print(f"    Decoys may be too 'easy' to distinguish")
+    
+    # Check π₀ estimation
+    # This would come from the main script results
+    
+    # Check method performance
+    if mae_comparison is not None:
+        our_mae = mae_comparison.get('ours_est', None)
+        baseline_maes = {k: v for k, v in mae_comparison.items() if k != 'ours_est'}
+        
+        if our_mae is not None and len(baseline_maes) > 0:
+            best_baseline_mae = min(baseline_maes.values())
+            
+            if our_mae > best_baseline_mae * 1.2:
+                issues.append("UNDERPERFORMING")
+                print(f"⚠️  Issue: BC-Min underperforms baselines significantly")
+                print(f"    BC-Min MAE: {our_mae:.4f}")
+                print(f"    Best baseline: {best_baseline_mae:.4f}")
+    
+    print("\n💡 SUGGESTED IMPROVEMENTS:")
+    print("-" * 60)
+    
+    if "LOW_SEPARATION" in issues or "SIMILAR_DISTRIBUTIONS" in issues:
+        print("\n1. IMPROVE DECOY GENERATION:")
+        print("   a) Train flows longer or with better architecture")
+        print("   b) Use negative samples from other classes as decoys")
+        print("   c) Mix synthetic decoys with real negative samples")
+        print("   d) Add noise/perturbation to make decoys more diverse")
+    
+    if "UNDERPERFORMING" in issues:
+        print("\n2. IMPROVE π₀ ESTIMATION:")
+        print("   a) Use more robust π₀ estimators (e.g., bootstrap)")
+        print("   b) Estimate π₀ globally instead of per-class")
+        print("   c) Use convex optimization for π₀")
+        print("   d) Try different lambda ranges in Storey's method")
+        
+        print("\n3. ALTERNATIVE COMBINATION STRATEGIES:")
+        print("   a) Try 'predicted' instead of 'min' combination")
+        print("   b) Weighted combination based on prediction confidence")
+        print("   c) Use FDR2 instead of B-H for binary control")
+        print("   d) Calibrate q-values after combination")
+        
+        print("\n4. LEVERAGE SOURCE DATA:")
+        print("   a) Use source accuracy as prior in estimation")
+        print("   b) Adaptive thresholding based on source distribution")
+        print("   c) Transfer learning: train on source, fine-tune on target decoys")
+    
+    print("\n5. HYBRID APPROACHES:")
+    print("   a) Combine BC-Min with best baseline (ensemble)")
+    print("   b) Use BC-Min for high-confidence, baseline for low-confidence")
+    print("   c) Weighted average based on per-class confidence")
+    
+    return issues
+
+
+def plot_decoy_quality(target_scores, decoy_scores, target_labels, predicted_labels, 
+                       save_path='figures/decoy_quality.png'):
+    """
+    Visualize decoy quality across classes.
+    """
+    n_samples, n_classes = target_scores.shape
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    for class_k in range(min(n_classes, 6)):
+        ax = axes[class_k]
+        
+        # Get samples predicted as this class
+        mask_predicted = (predicted_labels == class_k)
+        
+        if mask_predicted.sum() == 0:
+            ax.text(0.5, 0.5, f'No predictions\nfor class {class_k}', 
+                   ha='center', va='center', fontsize=12)
+            ax.set_title(f'Class {class_k}')
+            continue
+        
+        target_k = target_scores[mask_predicted, class_k]
+        decoy_k = decoy_scores[mask_predicted, class_k]
+        
+        # Separate TP and FP
+        mask_tp = (target_labels[mask_predicted] == class_k)
+        mask_fp = ~mask_tp
+        
+        # Plot distributions
+        if mask_tp.sum() > 0:
+            ax.hist(target_k[mask_tp], bins=30, alpha=0.5, label='Target (TP)', 
+                   color='green', density=True)
+        if mask_fp.sum() > 0:
+            ax.hist(target_k[mask_fp], bins=30, alpha=0.5, label='Target (FP)', 
+                   color='orange', density=True)
+        
+        ax.hist(decoy_k, bins=30, alpha=0.5, label='Decoy', 
+               color='red', density=True)
+        
+        ax.set_xlabel('Score')
+        ax.set_ylabel('Density')
+        ax.set_title(f'Class {class_k} (n={mask_predicted.sum()})')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    
+    # Remove extra subplots
+    for idx in range(n_classes, 6):
+        fig.delaxes(axes[idx])
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.savefig(save_path.replace('.png', '.pdf'), bbox_inches='tight')
+    plt.close()
+    
+    print(f"✓ Saved: {save_path}")
+
+print("\n" + "="*80)
+print("DECOY QUALITY ANALYSIS (Sample)")
+print("="*80)
+
+# Load one test file for detailed analysis
+test_file_sample = test_files[0]
+print(f"\nAnalyzing: {os.path.basename(test_file_sample)}")
+
+try:
+    test_data = torch.load(test_file_sample, weights_only=False)
+    features = test_data['features']
+    predictions = test_data['predictions']
+    labels = torch.tensor(test_data['mask'])
+    
+    predictions = torch.flatten(predictions, start_dim=2).squeeze(0).T    
+    features = torch.flatten(features, start_dim=2).squeeze(0).T    
+    labels = torch.flatten(labels, start_dim=0)
+    
+    test_ds = ScoreFeatureDataset(predictions, features, predictions, labels)
+    
+    test_scores, test_decoys, test_labels = separate_flows.generate_decoys(
+        test_ds, device=DEVICE
+    )
+    
+    test_scores = test_scores[::10]
+    test_decoys = test_decoys[::10]
+    test_labels = test_labels[::10]
+    
+    predicted_labels = test_scores.argmax(axis=1)
+    
+    # Run diagnostics
+    
+    diagnostics = analyze_decoy_quality(test_scores, test_decoys, test_labels, predicted_labels)
+    
+    # Create visualization
+    plot_decoy_quality(test_scores, test_decoys, test_labels, predicted_labels,
+                      save_path='figures/decoy_quality.png')
+    
+    # Get MAE comparison dict
+    mae_dict = {row['Method']: mae_df[mae_df['Method'] == row['Method']]['MAE'].iloc[0] 
+                for idx, row in mae_df.iterrows()}
+    
+    # Suggest improvements
+    suggest_improvements(diagnostics, mae_dict)
+    
+except Exception as e:
+    print(f"Could not run decoy analysis: {e}")
+
+print("\n" + "="*80)
+print("ALL ANALYSIS COMPLETE")
+print("="*80)
