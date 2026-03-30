@@ -2,3 +2,6 @@ data/camelyon17/score_feature_datasets.pth
 *.pth
 *.pt
 *.ckpt
+*.pth
+*.pt
+*.ckpt
