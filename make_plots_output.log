@@ -1,504 +1,28 @@
-NumPy version: 1.23.5
-PyTorch version: 2.5.1+cu121
-Device: cuda
-✓ Setup complete
+✓ ScoreShiftFlow defined — single flow over full score vector
 ✓ COT available
 ✓ Baseline methods: ['ATC', 'ATC-NE', 'AC', 'DOC', 'COT']
-✓ FDR control functions loaded (OPTIMIZED)
-✓ All helper functions loaded (OPTIMIZED)
+1.23.5
+✓ Mix-Max (correct formula) loaded
+✓ Updated estimation functions loaded
+✓ Plotting functions loaded (including Mix-Max + scatter)
+✓ Comparison plotting functions loaded
+Device    : cuda:1
+Baselines : ['ATC', 'ATC-NE', 'AC', 'DOC', 'COT']
 
-================================================================================
-LOADING DATA
-================================================================================
-/home/arina/Feature-Conditioned-Decoy-Generation/make_plots_bcss.py:533: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  data = torch.load(PATH_DATA)
-✓ Train loaded
+======================================================================
+LOADING TRAINING DATA
+======================================================================
+/home/arina/Feature-Conditioned-Decoy-Generation/make_plots_bcss.py:161: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  data     = torch.load(PATH_DATA)
+Train scores shape: (3394245, 5)
   Class 0: 1000000 samples
   Class 1: 1000000 samples
   Class 2: 776366 samples
   Class 3: 568007 samples
   Class 4: 49872 samples
 
-================================================================================
-LOADING FLOW MODEL
-================================================================================
-/home/arina/Feature-Conditioned-Decoy-Generation/make_plots_bcss.py:554: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  separate_flows.load_state_dict(torch.load('BCSS/bcss_cond_flows_model_mini.pth'))
-✓ Flow model uploaded
-
-================================================================================
-PREPARING SOURCE DATA (40% SUBSAMPLE)
-================================================================================
-✓ Source data: 1357698 samples
-✓ Calibration temperature: 1.100
-
-================================================================================
-PROCESSING TEST FILES
-================================================================================
-Found 48 test files
-Processing files:   0%|          | 0/48 [00:00<?, ?it/s]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 60%|██████    | 3/5 [00:00<00:00, 20.39it/s][A100%|██████████| 5/5 [00:00<00:00, 20.46it/s]
-Processing files:   2%|▏         | 1/48 [01:00<47:11, 60.24s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:04,  1.13s/it][A
- 40%|████      | 2/5 [00:02<00:03,  1.13s/it][A
- 60%|██████    | 3/5 [00:03<00:02,  1.13s/it][A
- 80%|████████  | 4/5 [00:04<00:01,  1.13s/it][A
-100%|██████████| 5/5 [00:05<00:00,  1.13s/it][A100%|██████████| 5/5 [00:05<00:00,  1.13s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:   4%|▍         | 2/48 [18:56<8:24:14, 657.71s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:04,  1.19s/it][A
- 40%|████      | 2/5 [00:02<00:03,  1.20s/it][A
- 60%|██████    | 3/5 [00:03<00:02,  1.20s/it][A
- 80%|████████  | 4/5 [00:04<00:01,  1.20s/it][A
-100%|██████████| 5/5 [00:06<00:00,  1.21s/it][A100%|██████████| 5/5 [00:06<00:00,  1.20s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:   6%|▋         | 3/48 [37:43<10:54:03, 872.09s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:00,  6.61it/s][A
- 40%|████      | 2/5 [00:00<00:00,  6.54it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  6.54it/s][A
- 80%|████████  | 4/5 [00:00<00:00,  6.56it/s][A
-100%|██████████| 5/5 [00:00<00:00,  6.55it/s][A100%|██████████| 5/5 [00:00<00:00,  6.55it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:   8%|▊         | 4/48 [40:38<7:17:45, 596.94s/it] Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:03,  1.23it/s][A
- 40%|████      | 2/5 [00:01<00:02,  1.22it/s][A
- 60%|██████    | 3/5 [00:02<00:01,  1.23it/s][A
- 80%|████████  | 4/5 [00:03<00:00,  1.22it/s][A
-100%|██████████| 5/5 [00:04<00:00,  1.22it/s][A100%|██████████| 5/5 [00:04<00:00,  1.22it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  10%|█         | 5/48 [53:46<7:57:07, 665.75s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:02,  1.75it/s][A
- 40%|████      | 2/5 [00:01<00:01,  1.75it/s][A
- 60%|██████    | 3/5 [00:01<00:01,  1.75it/s][A
- 80%|████████  | 4/5 [00:02<00:00,  1.75it/s][A
-100%|██████████| 5/5 [00:02<00:00,  1.73it/s][A100%|██████████| 5/5 [00:02<00:00,  1.74it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  12%|█▎        | 6/48 [1:03:12<7:22:27, 632.08s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.12it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.11it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.12it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.12it/s][A
-100%|██████████| 5/5 [00:02<00:00,  2.11it/s][A100%|██████████| 5/5 [00:02<00:00,  2.11it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  15%|█▍        | 7/48 [1:11:05<6:36:19, 580.00s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:04,  1.10s/it][A
- 40%|████      | 2/5 [00:02<00:03,  1.09s/it][A
- 60%|██████    | 3/5 [00:03<00:02,  1.10s/it][A
- 80%|████████  | 4/5 [00:04<00:01,  1.10s/it][A
-100%|██████████| 5/5 [00:05<00:00,  1.10s/it][A100%|██████████| 5/5 [00:05<00:00,  1.10s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  17%|█▋        | 8/48 [1:28:37<8:06:43, 730.08s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:02<00:11,  2.86s/it][A
- 40%|████      | 2/5 [00:05<00:08,  2.88s/it][A
- 60%|██████    | 3/5 [00:08<00:05,  2.87s/it][A
- 80%|████████  | 4/5 [00:11<00:02,  2.88s/it][A
-100%|██████████| 5/5 [00:14<00:00,  2.87s/it][A100%|██████████| 5/5 [00:14<00:00,  2.88s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  19%|█▉        | 9/48 [2:11:26<14:08:22, 1305.18s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:00,  5.32it/s][A
- 40%|████      | 2/5 [00:00<00:00,  4.80it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  5.00it/s][A
- 80%|████████  | 4/5 [00:00<00:00,  5.10it/s][A
-100%|██████████| 5/5 [00:00<00:00,  5.16it/s][A100%|██████████| 5/5 [00:00<00:00,  5.10it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  21%|██        | 10/48 [2:14:49<10:11:02, 964.80s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  3.50it/s][A
- 40%|████      | 2/5 [00:00<00:00,  3.50it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  3.51it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  3.51it/s][A
-100%|██████████| 5/5 [00:01<00:00,  3.51it/s][A100%|██████████| 5/5 [00:01<00:00,  3.51it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  23%|██▎       | 11/48 [2:19:43<7:48:25, 759.60s/it] Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:03,  1.31it/s][A
- 40%|████      | 2/5 [00:01<00:02,  1.31it/s][A
- 60%|██████    | 3/5 [00:02<00:01,  1.31it/s][A
- 80%|████████  | 4/5 [00:03<00:00,  1.31it/s][A
-100%|██████████| 5/5 [00:03<00:00,  1.31it/s][A100%|██████████| 5/5 [00:03<00:00,  1.31it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  25%|██▌       | 12/48 [2:32:02<7:31:54, 753.19s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:02,  1.45it/s][A
- 40%|████      | 2/5 [00:01<00:02,  1.44it/s][A
- 60%|██████    | 3/5 [00:02<00:01,  1.44it/s][A
- 80%|████████  | 4/5 [00:02<00:00,  1.44it/s][A
-100%|██████████| 5/5 [00:03<00:00,  1.44it/s][A100%|██████████| 5/5 [00:03<00:00,  1.44it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  27%|██▋       | 13/48 [2:43:19<7:05:52, 730.06s/it]⚠️ Skipping corrupted file TCGA-E2-A574-DX1_xmin54962_ymin47475_MPP-0.2500.png.tensor: Memo value not found at index 72
-Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:05,  1.49s/it][A
- 40%|████      | 2/5 [00:02<00:04,  1.49s/it][A
- 60%|██████    | 3/5 [00:04<00:02,  1.50s/it][A
- 80%|████████  | 4/5 [00:05<00:01,  1.49s/it][A
-100%|██████████| 5/5 [00:07<00:00,  1.49s/it][A100%|██████████| 5/5 [00:07<00:00,  1.49s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  31%|███▏      | 15/48 [3:06:51<6:35:26, 719.00s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:02<00:10,  2.53s/it][A
- 40%|████      | 2/5 [00:05<00:07,  2.55s/it][A
- 60%|██████    | 3/5 [00:07<00:05,  2.55s/it][A
- 80%|████████  | 4/5 [00:10<00:02,  2.55s/it][A
-100%|██████████| 5/5 [00:12<00:00,  2.55s/it][A100%|██████████| 5/5 [00:12<00:00,  2.55s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  33%|███▎      | 16/48 [3:45:17<9:54:03, 1113.86s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:06,  1.72s/it][A
- 40%|████      | 2/5 [00:03<00:05,  1.74s/it][A
- 60%|██████    | 3/5 [00:05<00:03,  1.74s/it][A
- 80%|████████  | 4/5 [00:06<00:01,  1.75s/it][A
-100%|██████████| 5/5 [00:08<00:00,  1.75s/it][A100%|██████████| 5/5 [00:08<00:00,  1.74s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  35%|███▌      | 17/48 [4:12:11<10:43:18, 1245.11s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:07,  1.85s/it][A
- 40%|████      | 2/5 [00:03<00:05,  1.85s/it][A
- 60%|██████    | 3/5 [00:05<00:03,  1.85s/it][A
- 80%|████████  | 4/5 [00:07<00:01,  1.85s/it][A
-100%|██████████| 5/5 [00:09<00:00,  1.85s/it][A100%|██████████| 5/5 [00:09<00:00,  1.85s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  38%|███▊      | 18/48 [4:40:40<11:25:47, 1371.57s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  3.31it/s][A
- 40%|████      | 2/5 [00:00<00:00,  3.31it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  3.31it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  3.31it/s][A
-100%|██████████| 5/5 [00:01<00:00,  3.30it/s][A100%|██████████| 5/5 [00:01<00:00,  3.30it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  40%|███▉      | 19/48 [4:45:51<8:39:18, 1074.42s/it] ⚠️ Skipping corrupted file TCGA-E2-A1AZ-DX1_xmin50286_ymin17075_MPP-0.2500.png.tensor: PytorchStreamReader failed reading zip archive: failed finding central directory
-Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:05,  1.40s/it][A
- 40%|████      | 2/5 [00:02<00:04,  1.40s/it][A
- 60%|██████    | 3/5 [00:04<00:02,  1.40s/it][A
- 80%|████████  | 4/5 [00:05<00:01,  1.40s/it][A
-100%|██████████| 5/5 [00:07<00:00,  1.41s/it][A100%|██████████| 5/5 [00:07<00:00,  1.41s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  44%|████▍     | 21/48 [5:07:47<6:40:07, 889.18s/it] Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:03,  1.28it/s][A
- 40%|████      | 2/5 [00:01<00:02,  1.27it/s][A
- 60%|██████    | 3/5 [00:02<00:01,  1.27it/s][A
- 80%|████████  | 4/5 [00:03<00:00,  1.27it/s][A
-100%|██████████| 5/5 [00:03<00:00,  1.27it/s][A100%|██████████| 5/5 [00:03<00:00,  1.27it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  46%|████▌     | 22/48 [5:20:27<6:11:50, 858.08s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:00,  6.20it/s][A
- 40%|████      | 2/5 [00:00<00:00,  6.21it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  6.27it/s][A
- 80%|████████  | 4/5 [00:00<00:00,  6.22it/s][A
-100%|██████████| 5/5 [00:00<00:00,  6.23it/s][A100%|██████████| 5/5 [00:00<00:00,  6.23it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  48%|████▊     | 23/48 [5:23:26<4:45:03, 684.12s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.49it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.42it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.38it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.41it/s][A
-100%|██████████| 5/5 [00:02<00:00,  2.43it/s][A100%|██████████| 5/5 [00:02<00:00,  2.42it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  50%|█████     | 24/48 [5:30:08<4:03:27, 608.65s/it]⚠️ Skipping corrupted file TCGA-E2-A1LK-DX1_xmin75611_ymin27593_MPP-0.2500.png.tensor: PytorchStreamReader failed reading zip archive: failed finding central directory
-Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  3.64it/s][A
- 40%|████      | 2/5 [00:00<00:00,  3.61it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  3.62it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  3.61it/s][A
-100%|██████████| 5/5 [00:01<00:00,  3.56it/s][A100%|██████████| 5/5 [00:01<00:00,  3.58it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  54%|█████▍    | 26/48 [5:34:54<2:29:06, 406.65s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 40%|████      | 2/5 [00:00<00:00, 10.69it/s][A
- 80%|████████  | 4/5 [00:00<00:00, 10.65it/s][A100%|██████████| 5/5 [00:00<00:00, 10.63it/s]
-Processing files:  56%|█████▋    | 27/48 [5:36:43<1:57:41, 336.26s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.78it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.74it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.75it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.76it/s][A
-100%|██████████| 5/5 [00:01<00:00,  2.76it/s][A100%|██████████| 5/5 [00:01<00:00,  2.76it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  58%|█████▊    | 28/48 [5:42:51<1:54:47, 344.39s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:04,  1.22s/it][A
- 40%|████      | 2/5 [00:02<00:03,  1.22s/it][A
- 60%|██████    | 3/5 [00:03<00:02,  1.22s/it][A
- 80%|████████  | 4/5 [00:04<00:01,  1.22s/it][A
-100%|██████████| 5/5 [00:06<00:00,  1.22s/it][A100%|██████████| 5/5 [00:06<00:00,  1.22s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  60%|██████    | 29/48 [6:02:05<2:56:58, 558.88s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  3.79it/s][A
- 40%|████      | 2/5 [00:00<00:00,  3.77it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  3.77it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  3.78it/s][A
-100%|██████████| 5/5 [00:01<00:00,  3.78it/s][A100%|██████████| 5/5 [00:01<00:00,  3.78it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  62%|██████▎   | 30/48 [6:06:41<2:24:23, 481.29s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:04,  1.05s/it][A
- 40%|████      | 2/5 [00:02<00:03,  1.05s/it][A
- 60%|██████    | 3/5 [00:03<00:02,  1.05s/it][A
- 80%|████████  | 4/5 [00:04<00:01,  1.05s/it][A
-100%|██████████| 5/5 [00:05<00:00,  1.05s/it][A100%|██████████| 5/5 [00:05<00:00,  1.05s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  65%|██████▍   | 31/48 [6:23:22<2:57:51, 627.75s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:00,  6.18it/s][A
- 40%|████      | 2/5 [00:00<00:00,  6.16it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  6.17it/s][A
- 80%|████████  | 4/5 [00:00<00:00,  6.17it/s][A
-100%|██████████| 5/5 [00:00<00:00,  6.15it/s][A100%|██████████| 5/5 [00:00<00:00,  6.16it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  67%|██████▋   | 32/48 [6:26:19<2:12:54, 498.38s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:02,  1.68it/s][A
- 40%|████      | 2/5 [00:01<00:01,  1.68it/s][A
- 60%|██████    | 3/5 [00:01<00:01,  1.68it/s][A
- 80%|████████  | 4/5 [00:02<00:00,  1.68it/s][A
-100%|██████████| 5/5 [00:02<00:00,  1.68it/s][A100%|██████████| 5/5 [00:02<00:00,  1.68it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  69%|██████▉   | 33/48 [6:36:08<2:11:10, 524.70s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.71it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.69it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.70it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.70it/s][A
-100%|██████████| 5/5 [00:01<00:00,  2.70it/s][A100%|██████████| 5/5 [00:01<00:00,  2.70it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  71%|███████   | 34/48 [6:42:26<1:52:22, 481.61s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:03,  1.08it/s][A
- 40%|████      | 2/5 [00:01<00:02,  1.08it/s][A
- 60%|██████    | 3/5 [00:02<00:01,  1.06it/s][A
- 80%|████████  | 4/5 [00:03<00:00,  1.07it/s][A
-100%|██████████| 5/5 [00:04<00:00,  1.07it/s][A100%|██████████| 5/5 [00:04<00:00,  1.07it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  73%|███████▎  | 35/48 [6:57:25<2:11:02, 604.77s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:02,  1.42it/s][A
- 40%|████      | 2/5 [00:01<00:02,  1.39it/s][A
- 60%|██████    | 3/5 [00:02<00:01,  1.40it/s][A
- 80%|████████  | 4/5 [00:02<00:00,  1.40it/s][A
-100%|██████████| 5/5 [00:03<00:00,  1.40it/s][A100%|██████████| 5/5 [00:03<00:00,  1.40it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  75%|███████▌  | 36/48 [7:08:56<2:06:07, 630.60s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:06,  1.70s/it][A
- 40%|████      | 2/5 [00:03<00:05,  1.70s/it][A
- 60%|██████    | 3/5 [00:05<00:03,  1.70s/it][A
- 80%|████████  | 4/5 [00:06<00:01,  1.70s/it][A
-100%|██████████| 5/5 [00:08<00:00,  1.70s/it][A100%|██████████| 5/5 [00:08<00:00,  1.70s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  77%|███████▋  | 37/48 [7:35:15<2:47:22, 912.96s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.32it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.32it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.31it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.30it/s][A
-100%|██████████| 5/5 [00:02<00:00,  2.30it/s][A100%|██████████| 5/5 [00:02<00:00,  2.30it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  79%|███████▉  | 38/48 [7:42:38<2:08:44, 772.49s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:05,  1.37s/it][A
- 40%|████      | 2/5 [00:02<00:04,  1.37s/it][A
- 60%|██████    | 3/5 [00:04<00:02,  1.37s/it][A
- 80%|████████  | 4/5 [00:05<00:01,  1.37s/it][A
-100%|██████████| 5/5 [00:06<00:00,  1.37s/it][A100%|██████████| 5/5 [00:06<00:00,  1.37s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  81%|████████▏ | 39/48 [8:04:05<2:18:58, 926.52s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.06it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.06it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.05it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.06it/s][A
-100%|██████████| 5/5 [00:02<00:00,  2.06it/s][A100%|██████████| 5/5 [00:02<00:00,  2.06it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  83%|████████▎ | 40/48 [8:12:14<1:46:03, 795.42s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  3.50it/s][A
- 40%|████      | 2/5 [00:00<00:00,  3.53it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  3.53it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  3.53it/s][A
-100%|██████████| 5/5 [00:01<00:00,  3.53it/s][A100%|██████████| 5/5 [00:01<00:00,  3.53it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  85%|████████▌ | 41/48 [8:17:05<1:15:10, 644.32s/it]⚠️ Skipping corrupted file TCGA-E2-A1B6-DX1_xmin16266_ymin50634_MPP-0.2500.png.tensor: PytorchStreamReader failed reading zip archive: failed finding central directory
-Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:02,  1.92it/s][A
- 40%|████      | 2/5 [00:01<00:01,  1.90it/s][A
- 60%|██████    | 3/5 [00:01<00:01,  1.91it/s][A
- 80%|████████  | 4/5 [00:02<00:00,  1.90it/s][A
-100%|██████████| 5/5 [00:02<00:00,  1.90it/s][A100%|██████████| 5/5 [00:02<00:00,  1.90it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  90%|████████▉ | 43/48 [8:25:48<38:59, 468.00s/it]  Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:02<00:10,  2.57s/it][A
- 40%|████      | 2/5 [00:05<00:07,  2.58s/it][A
- 60%|██████    | 3/5 [00:07<00:05,  2.58s/it][A
- 80%|████████  | 4/5 [00:10<00:02,  2.58s/it][A
-100%|██████████| 5/5 [00:12<00:00,  2.58s/it][A100%|██████████| 5/5 [00:12<00:00,  2.58s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  92%|█████████▏| 44/48 [9:04:30<1:01:49, 927.30s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:02,  1.54it/s][A
- 40%|████      | 2/5 [00:01<00:01,  1.54it/s][A
- 60%|██████    | 3/5 [00:01<00:01,  1.54it/s][A
- 80%|████████  | 4/5 [00:02<00:00,  1.54it/s][A
-100%|██████████| 5/5 [00:03<00:00,  1.54it/s][A100%|██████████| 5/5 [00:03<00:00,  1.54it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  94%|█████████▍| 45/48 [9:15:08<42:35, 851.72s/it]  Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:01<00:05,  1.41s/it][A
- 40%|████      | 2/5 [00:02<00:04,  1.42s/it][A
- 60%|██████    | 3/5 [00:04<00:02,  1.42s/it][A
- 80%|████████  | 4/5 [00:05<00:01,  1.42s/it][A
-100%|██████████| 5/5 [00:07<00:00,  1.42s/it][A100%|██████████| 5/5 [00:07<00:00,  1.42s/it]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  96%|█████████▌| 46/48 [9:37:17<32:42, 981.41s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:00,  4.70it/s][A
- 40%|████      | 2/5 [00:00<00:00,  4.65it/s][A
- 60%|██████    | 3/5 [00:00<00:00,  4.63it/s][A
- 80%|████████  | 4/5 [00:00<00:00,  4.63it/s][A
-100%|██████████| 5/5 [00:01<00:00,  4.63it/s][A100%|██████████| 5/5 [00:01<00:00,  4.63it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files:  98%|█████████▊| 47/48 [9:41:06<12:50, 770.82s/it]Computing binary FDR control for each class...
-
-  0%|          | 0/5 [00:00<?, ?it/s][A
- 20%|██        | 1/5 [00:00<00:01,  2.06it/s][A
- 40%|████      | 2/5 [00:00<00:01,  2.07it/s][A
- 60%|██████    | 3/5 [00:01<00:00,  2.06it/s][A
- 80%|████████  | 4/5 [00:01<00:00,  2.06it/s][A
-100%|██████████| 5/5 [00:02<00:00,  2.03it/s][A100%|██████████| 5/5 [00:02<00:00,  2.04it/s]
-/home/arina/.conda/envs/breeds/lib/python3.9/site-packages/ot/lp/_network_simplex.py:332: UserWarning: numItermax reached before optimality. Try to increase numItermax.
-  result_code_string = check_result(result_code)
-Processing files: 100%|██████████| 48/48 [9:49:18<00:00, 691.17s/it]Processing files: 100%|██████████| 48/48 [9:49:18<00:00, 736.63s/it]
-
-✓ Processed 44 test images successfully
-
-================================================================================
-COMPUTING MEAN ERRORS
-================================================================================
-
-Mean Absolute Error (MAE) by Method:
-----------------------------------------
-ours_est       : 0.2855 ± 0.1856
-ATC            : 0.2008 ± 0.1639
-ATC-NE         : 0.2137 ± 0.1617
-AC             : 0.1991 ± 0.1605
-DOC            : 0.1984 ± 0.1599
-COT            : 0.3616 ± 0.2128
-
-================================================================================
-CREATING VISUALIZATIONS
-================================================================================
-✓ Saved: scatter_true_vs_best.png/pdf
-✓ Saved: scatter_est_vs_true.png/pdf
-✓ Saved: error_hist.png/pdf
-✓ Saved: mean_error_comparison.png/pdf
-
-================================================================================
-ANALYSIS COMPLETE
-================================================================================
-
-Results saved to: figures/
-Total images processed: 44
-
-Best performing method: DOC (MAE: 0.1984)
+======================================================================
+FLOW MODEL
+======================================================================
+✓ ScoreShiftFlow defined — single flow over full score vector
+Training ScoreShiftFlow...
