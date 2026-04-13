@@ -1,3 +1,11 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from torchvision import datasets, transforms
+import numpy as np
+from datetime import date
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,632 +14,349 @@ from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 from bisect import bisect
 import os
-from sklearn.neighbors import KernelDensity
-
 
 
 def empirical_p_values(distribution, query):
+    """Calculate empirical p-values from decoy distribution."""
     dist_len = len(distribution)
-    query_len = len(query)
-    p_values = np.zeros(query_len)
+    p_values = np.zeros(len(query))
     sorted_dist = np.sort(distribution)
     for i, score in enumerate(query):
         p_values[i] = (dist_len - bisect(sorted_dist, score)) / dist_len
-
     return p_values
 
 
 def estimate_pi0_storey(p_values, lambda_range=np.arange(0.05, 0.95, 0.05)):
-    pi0_estimates = []
-    for lam in lambda_range:
-        pi0_lam = np.mean(p_values > lam) / (1 - lam)
-        pi0_estimates.append(pi0_lam)
-    pi0 = np.mean(pi0_estimates)
-    return min(1.0, max(0, pi0))
+    """Estimate proportion of nulls using Storey's method (LABEL-FREE)."""
+    pi0_estimates = [np.mean(p_values > lam) / (1 - lam) for lam in lambda_range]
+    return min(1.0, max(0, np.mean(pi0_estimates)))
 
 
-def benjamini_hochberg_storey(p_values):
+def benjamini_hochberg(p_values, pi0=1.0):
+    """Standard Benjamini-Hochberg procedure with π₀ adjustment."""
     n = len(p_values)
-    pi0 = estimate_pi0_storey(p_values)
-    sorted_indices = np.argsort(p_values)
-    sorted_p = p_values[sorted_indices]
+    sorted_idx = np.argsort(p_values)
+    sorted_p = p_values[sorted_idx]
     q_values = np.zeros(n)
-    prev_min = 1.0
-    for i in range(n-1, -1, -1):
-        rank = i + 1
-        q_value = pi0 * sorted_p[i] * n / rank
-        q_value = min(q_value, prev_min)
-        q_values[sorted_indices[i]] = q_value
-        prev_min = q_value
-
-    return q_values
-
-
-def benjamini_hochberg_fixed(p_values, pi0=1.0):
-    n = len(p_values)
-    sorted_indices = np.argsort(p_values)
-    sorted_p = p_values[sorted_indices]
-    q_values = np.zeros(n)
-    prev_min = 1.0
-    for i in range(n-1, -1, -1):
-        rank = i + 1
-        q_value = pi0 * sorted_p[i] * n / rank
-        q_value = min(q_value, prev_min)
-        q_values[sorted_indices[i]] = q_value
-        prev_min = q_value
-
-    return q_values
-
-
-def calculate_qvalues_from_pvalues(distribution, query, pi_0=0.9):
-    p_values = empirical_p_values(np.sort(distribution), query)
-    q_values = p_values * len(p_values) * pi_0
-    q_values = q_values / np.arange(1, len(p_values) + 1)
-    for i in range(len(p_values)-1, 0, -1):
-        q_values[i-1] = min(q_values[i-1], q_values[i])
-    return np.sort(q_values)
-
-
-def negative_training_benchmark(train_cnn_scores, train_labels, test_cnn_scores,
-                                target_class, fdr_level=0.05):
-    neg_train_mask = (train_labels != target_class)
-    null_distribution = train_cnn_scores[neg_train_mask]
-    test_scores = test_cnn_scores
-    p_values = empirical_p_values(null_distribution, test_scores)
-    q_values = benjamini_hochberg_storey(np.sort(p_values))
-    n_discoveries = (q_values <= fdr_level).sum()
-    return n_discoveries, q_values, p_values
-
-def control_fdr(model_scores, target_labels, decoys,
-                train_cnn_scores=None, train_labels=None,
-                test_cnn_scores=None, target_class=None):
     
-    # Create dataframe with original index preserved
-    df = pd.DataFrame({
-        'model_score': model_scores,
-        'label': target_labels,
-        'decoy_score': decoys,
-        'original_index': np.arange(len(model_scores))
-    })
+    for i in range(n):
+        q = min(1.0, (n * sorted_p[i] * pi0) / (i + 1))
+        q_values[i] = q
     
-    # Compute p-values first (before any sorting)
-    df['p_value'] = empirical_p_values(np.sort(decoys), model_scores)
-    
-    # Compute q-values using BH (before any sorting)
-    df['q_values_bh_storey'] = benjamini_hochberg_storey(df['p_value'].values)
-    df['q_values_bh_fixed'] = benjamini_hochberg_fixed(df['p_value'].values)
-    
-    # Now sort by model_score for ground truth FDR calculation
-    df = df.sort_values(by='model_score', ascending=False).reset_index(drop=True)
-    
-    # Ground truth FDR
-    df['fdr'] = 0.0
-    num_neg = 0
-    num_pos = 0
-    
-    for index, row in df.iterrows():
-        if row['label'] == 0:
-            num_neg += 1
-        else:
-            num_pos += 1
-        if num_pos + num_neg > 0:
-            df.at[index, 'fdr'] = (num_neg + 1.0) / (num_pos + num_neg)
-    
-    df['q_values_ground_truth'] = df['fdr'].copy()
-    prev = 1
-    for index in range(len(df) - 1, -1, -1):
-        df.loc[index, 'q_values_ground_truth'] = min(prev, df.loc[index, 'q_values_ground_truth'])
-        prev = df.loc[index, 'q_values_ground_truth']
-    
-    # TDC method - compute on sorted data by max_score
-    df['max_score'] = df[['model_score', 'decoy_score']].max(axis=1)
-    
-    # Sort by max_score for TDC, preserving original_index
-    df_sorted_by_max = df.sort_values(by='max_score', ascending=False).reset_index(drop=True)
-    
-    fdr_tdc_list = []
-    num_decoy_wins = 0
-    num_target_wins = 0
-    
-    for index, row in df_sorted_by_max.iterrows():
-        if row['model_score'] >= row['decoy_score']:  # Target wins
-            num_target_wins += 1
-            if num_target_wins > 0:
-                fdr_tdc_list.append((num_decoy_wins + 1.0) / num_target_wins)
-            else:
-                fdr_tdc_list.append(1.0)
-        else:  # Decoy wins - not counted as discovery
-            num_decoy_wins += 1
-            fdr_tdc_list.append(np.nan)  # No FDR value for decoy wins
-    
-    df_sorted_by_max['fdr_tdc'] = fdr_tdc_list
-    
-    # Make monotone (only for target wins)
-    q_values_tdc_list = df_sorted_by_max['fdr_tdc'].tolist()
-    prev = 1.0
-    for index in range(len(q_values_tdc_list) - 1, -1, -1):
-        if not np.isnan(q_values_tdc_list[index]):
-            q_values_tdc_list[index] = min(prev, q_values_tdc_list[index])
-            prev = q_values_tdc_list[index]
-    
-    df_sorted_by_max['q_values_tdc'] = q_values_tdc_list
-    
-    # Map TDC q-values back using original_index
-    tdc_mapping = dict(zip(df_sorted_by_max['original_index'], 
-                           df_sorted_by_max['q_values_tdc']))
-    df['q_values_tdc'] = df['original_index'].map(tdc_mapping)
-    
-    if (train_cnn_scores is not None and train_labels is not None and
-        test_cnn_scores is not None and target_class is not None):
-        # Negative training - compute on original order using original_index
-        neg_train_mask = (train_labels != target_class)
-        null_distribution = train_cnn_scores[neg_train_mask]
-        
-        # Create mapping from original_index to values
-        p_values_neg_full = empirical_p_values(null_distribution, model_scores)
-        q_values_neg_full = benjamini_hochberg_storey(p_values_neg_full)
-        
-        # Map to current df using original_index
-        neg_p_mapping = dict(zip(np.arange(len(model_scores)), p_values_neg_full))
-        neg_q_mapping = dict(zip(np.arange(len(model_scores)), q_values_neg_full))
-        
-        df['p_values_negative_training'] = df['original_index'].map(neg_p_mapping)
-        df['q_values_negative_training'] = df['original_index'].map(neg_q_mapping)
-    
-    return df
-
-def plot_fdr_comprehensive(df, filename="fdr_comprehensive"):
-    """Comprehensive FDR plot with all methods"""
-    plt.figure(figsize=(6, 4))  # Updated figure size
-    
-    methods = [
-        ('q_values_tdc', 'TDC', 'blue', '-'),
-        ('q_values_ground_truth', 'Ground Truth', 'green', '-'),
-        ('q_values_bh_storey', 'BH (Storey π₀)', 'red', '-'),
-    ]
-    if 'q_values_negative_training' in df.columns:
-        methods.append(('q_values_negative_training', 'Negative Training', 'orange', ':'))
-    
-    for col_name, label, color, linestyle in methods:
-        df_sorted = df.sort_values(by=col_name, ascending=True).reset_index(drop=True)
-        plt.plot(df_sorted[col_name], np.arange(len(df_sorted)), 
-                marker='none', linestyle=linestyle, label=label, linewidth=2, color=color)
-    
-    plt.ylabel('Number of Discoveries')
-    plt.xlabel('Q-values')
-    plt.title('Comparison of FDR Control Methods')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.xlim(0, 1)
-    
-    # Save in both formats
-    plt.savefig(PATH + filename + ".png", bbox_inches='tight', dpi=300)
-    plt.savefig(PATH + filename + ".pdf", bbox_inches='tight')
-    plt.show()
-    
-    return plt
-
-def plot_fdr_comprehensive(df, filename="fdr_comprehensive"):
-    """Comprehensive FDR plot with all methods"""
-    
-    methods = [
-        ('q_values_ground_truth', 'Ground Truth', 'green', '-'),
-        ('q_values_bh_storey', 'BH (Storey π₀)', 'red', '-'),
-        ('q_values_tdc', 'TDC', 'blue', '-'),
-    ]
-    if 'q_values_negative_training' in df.columns:
-        methods.append(('q_values_negative_training', 'Negative Training', 'orange', ':'))
-    
-    # Создаем два графика с разными xlim
-    xlim_configs = [
-        (1.0, "full"),    # График до 1.0
-        (0.2, "zoom")     # График до 0.2
-    ]
-    
-    for xmax, suffix in xlim_configs:
-        plt.figure(figsize=(6, 4))  # Updated figure size
-        
-        for col_name, label, color, linestyle in methods:
-            df_sorted = df.sort_values(by=col_name, ascending=True).reset_index(drop=True)
-            plt.plot(df_sorted[col_name], np.arange(len(df_sorted)), 
-                    marker='none', linestyle=linestyle, label=label, linewidth=2, color=color)
-        
-        plt.ylabel('Number of discoveries')
-        plt.xlabel('Estimated FDR (Q-values)')
-        plt.title(f'Comparison of FDR Control Methods')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.xlim(0, xmax)
-        
-        # Сохраняем с разными именами файлов
-        plt.savefig(PATH + f"{filename}_{suffix}.png", bbox_inches='tight', dpi=300)
-        plt.savefig(PATH + f"{filename}_{suffix}.pdf", bbox_inches='tight')
-        plt.show()
-    
-    return plt
-
-
-def estimate_confusion_matrix_1(df, pi0):
-    df_cm = df.copy()
-    total_samples = len(df)
-    
-    # Sort by model score descending (from highest to lowest threshold)
-    df_cm = df_cm.sort_values(by='model_score', ascending=False).reset_index(drop=True)
-    
-    # Threshold is the model_score at each position
-    df_cm['threshold'] = df_cm['model_score']
-    
-    # Number of discoveries at this threshold (samples with score >= threshold)
-    df_cm['n_discoveries'] = np.arange(1, len(df_cm) + 1)
-    
-    # Estimate confusion matrix components using formulas from Section 5
-    # FP(s_th) = |{f(t) >= s_th}| * FDP(s_th)
-    df_cm['FP_est'] = df_cm['n_discoveries'] * (df_cm['q_values_bh_storey'])
-    
-    # TP(s_th) = |{f(t) >= s_th}| * (1 - FDP(s_th))
-    df_cm['TP_est'] = df_cm['n_discoveries'] * (1 - df_cm['q_values_bh_storey'])
-    
-    # TN(s_th) = |T| * pi0 - FP(s_th)
-    df_cm['TN_est'] = total_samples * pi0 - df_cm['FP_est']
-    
-    # FN(s_th) = |T| * (1 - pi0) - TP(s_th)
-    df_cm['FN_est'] = total_samples * (1 - pi0) - df_cm['TP_est']
-    
-    # Accuracy = (TP + TN) / |T|
-    df_cm['Accuracy_est'] = (df_cm['TP_est'] + df_cm['TN_est']) / total_samples
-    
-    # Ground truth accuracy for comparison
-    # At each threshold: TP_true = positives with score >= threshold
-    #                    TN_true = negatives with score < threshold
-    df_cm['TP_true'] = (df_cm['label'] == 1).cumsum()
-    df_cm['TN_true'] = (df_cm['label'] == 0).sum() - (df_cm['label'] == 0).cumsum()
-    df_cm['Accuracy_true'] = (df_cm['TP_true'] + df_cm['TN_true']) / total_samples
-    
-    return df_cm
-
-
-def estimate_confusion_matrix(df, pi0):
-    df_cm = df.copy()
-    total_samples = len(df)
-    
-    # Make sure we're sorted by model score descending
-    df_cm = df_cm.sort_values(by='model_score', ascending=False).reset_index(drop=True)
-    
-    # Threshold is the model_score at each position
-    df_cm['threshold'] = df_cm['model_score']
-    
-    # Number of discoveries at this threshold (samples with score >= threshold)
-    # This is just the rank (1, 2, 3, ...)
-    df_cm['n_discoveries'] = np.arange(1, len(df_cm) + 1)
-    
-    # For each threshold, estimate FDP using p-values and BH procedure
-    # The q-value at position i tells us the FDR if we make i discoveries
-    # But we want the FDP at each threshold
-    
-    # Method 1: Use p-values directly to estimate FDP
-    # At threshold corresponding to rank i:
-    # Expected number of false positives = n_discoveries * p_value * pi0
-    # (because p_value estimates P(null score >= threshold))
-    
-    # FDP estimate at each threshold
-    df_cm['FDP_est'] = df_cm['p_value'] * pi0
-    
-    # Now compute confusion matrix
-    # FP(s_th) = |{f(t) >= s_th}| * FDP(s_th)
-    df_cm['FP_est'] = df_cm['n_discoveries'] * df_cm['FDP_est']
-    
-    # TP(s_th) = |{f(t) >= s_th}| * (1 - FDP(s_th))
-    df_cm['TP_est'] = df_cm['n_discoveries'] * (1 - df_cm['FDP_est'])
-    
-    # TN(s_th) = |T| * pi0 - FP(s_th)
-    df_cm['TN_est'] = total_samples * pi0 - df_cm['FP_est']
-    
-    # FN(s_th) = |T| * (1 - pi0) - TP(s_th)
-    df_cm['FN_est'] = total_samples * (1 - pi0) - df_cm['TP_est']
-    
-    # Clip negative values (can happen due to estimation error)
-    df_cm['FP_est'] = np.maximum(0, df_cm['FP_est'])
-    df_cm['TP_est'] = np.maximum(0, df_cm['TP_est'])
-    df_cm['TN_est'] = np.maximum(0, df_cm['TN_est'])
-    df_cm['FN_est'] = np.maximum(0, df_cm['FN_est'])
-    
-    # Accuracy = (TP + TN) / |T|
-    df_cm['Accuracy_est'] = (df_cm['TP_est'] + df_cm['TN_est']) / total_samples
-    
-    # Ground truth accuracy for comparison
-    # At each threshold: TP_true = positives with score >= threshold
-    #                    TN_true = negatives with score < threshold
-    df_cm['TP_true'] = (df_cm['label'] == 1).cumsum()
-    df_cm['FP_true'] = (df_cm['label'] == 0).cumsum()
-    df_cm['TN_true'] = (df_cm['label'] == 0).sum() - df_cm['FP_true']
-    df_cm['FN_true'] = (df_cm['label'] == 1).sum() - df_cm['TP_true']
-    df_cm['Accuracy_true'] = (df_cm['TP_true'] + df_cm['TN_true']) / total_samples
-    
-    return df_cm
-
-
-def estimate_confusion_matrix_v2(df, pi0):
-    """
-    Alternative version using q-values directly
-    """
-    df_cm = df.copy()
-    total_samples = len(df)
-    
-    df_cm = df_cm.sort_values(by='model_score', ascending=False).reset_index(drop=True)
-    df_cm['threshold'] = df_cm['model_score']
-    df_cm['n_discoveries'] = np.arange(1, len(df_cm) + 1)
-    
-    # q-value IS the FDR estimate for making n_discoveries
-    # So: E[FP] = n_discoveries * q_value
-    df_cm['FP_est'] = df_cm['n_discoveries'] * df_cm['q_values_bh_storey']
-    df_cm['TP_est'] = df_cm['n_discoveries'] - df_cm['FP_est']
-    
-    # For TN and FN, we need pi0
-    df_cm['TN_est'] = total_samples * pi0 - df_cm['FP_est']
-    df_cm['FN_est'] = total_samples * (1 - pi0) - df_cm['TP_est']
-    
-    df_cm['FP_est'] = np.maximum(0, df_cm['FP_est'])
-    df_cm['TP_est'] = np.maximum(0, df_cm['TP_est'])
-    df_cm['TN_est'] = np.maximum(0, df_cm['TN_est'])
-    df_cm['FN_est'] = np.maximum(0, df_cm['FN_est'])
-    
-    df_cm['Accuracy_est'] = (df_cm['TP_est'] + df_cm['TN_est']) / total_samples
-    
-    # Ground truth
-    df_cm['TP_true'] = (df_cm['label'] == 1).cumsum()
-    df_cm['FP_true'] = (df_cm['label'] == 0).cumsum()
-    df_cm['TN_true'] = (df_cm['label'] == 0).sum() - df_cm['FP_true']
-    df_cm['FN_true'] = (df_cm['label'] == 1).sum() - df_cm['TP_true']
-    df_cm['Accuracy_true'] = (df_cm['TP_true'] + df_cm['TN_true']) / total_samples
-    
-    return df_cm
-
-
-def plot_confusion_matrix_analysis(df, pi0, filename="confusion_matrix_analysis"):
-    """
-    Create a 3-panel plot showing:
-    1. TP and FP estimates vs threshold
-    2. TN and FN estimates vs threshold
-    3. Accuracy estimates vs threshold
-    """
-    df_cm = estimate_confusion_matrix_v2(df, pi0)
-    
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    
-    # Panel 1: TP and FP vs threshold
-    axes[0].plot(df_cm['threshold'], df_cm['TP_est'], 
-                 label='TP (estimated)', color='green', linewidth=2)
-    axes[0].plot(df_cm['threshold'], df_cm['FP_est'], 
-                 label='FP (estimated)', color='red', linewidth=2)
-    # Add ground truth for comparison
-    axes[0].plot(df_cm['threshold'], df_cm['TP_true'], 
-                 label='TP (true)', color='green', linewidth=1, linestyle='--', alpha=0.7)
-    axes[0].set_xlabel('Threshold (score)')
-    axes[0].set_ylabel('Count')
-    axes[0].set_title('True Positives and False Positives')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-    
-    # Panel 2: TN and FN vs threshold
-    axes[1].plot(df_cm['threshold'], df_cm['TN_est'], 
-                 label='TN (estimated)', color='blue', linewidth=2)
-    axes[1].plot(df_cm['threshold'], df_cm['FN_est'], 
-                 label='FN (estimated)', color='orange', linewidth=2)
-    # Add ground truth for comparison
-    axes[1].plot(df_cm['threshold'], df_cm['TN_true'], 
-                 label='TN (true)', color='blue', linewidth=1, linestyle='--', alpha=0.7)
-    axes[1].set_xlabel('Threshold (score)')
-    axes[1].set_ylabel('Count')
-    axes[1].set_title('True Negatives and False Negatives')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-    
-    # Panel 3: Accuracy vs threshold
-    axes[2].plot(df_cm['threshold'], df_cm['Accuracy_est'], 
-                 label='Accuracy (estimated)', color='dodgerblue', linewidth=2, linestyle='-')
-    axes[2].plot(df_cm['threshold'], df_cm['Accuracy_true'], 
-                 label='Accuracy (ground truth)', color='black', linewidth=2, linestyle='--')
-    axes[2].set_xlabel('Threshold (score)')
-    axes[2].set_ylabel('Accuracy')
-    axes[2].set_title('Accuracy Estimation')
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
-    axes[2].set_ylim([0, 1])
-    
-    plt.tight_layout()
-    plt.savefig(PATH + filename + ".png", bbox_inches='tight', dpi=300)
-    plt.savefig(PATH + filename + ".pdf", bbox_inches='tight')
-    plt.show()
-    
-    return df_cm
-
-
-def control_fdr_multiclass(model_scores, target_labels, decoy_scores,
-                           train_cnn_scores=None, train_labels=None,
-                           test_cnn_scores=None, num_classes=None):
-    """
-    Multi-class FDR control using Mix-Max method.
-    
-    Args:
-        model_scores: array of shape (n_samples, num_classes) - scores for each class
-        target_labels: array of shape (n_samples,) - true class labels
-        decoy_scores: array of shape (n_samples, num_classes) - decoy scores for each class
-    """
-    
-    n_samples = len(model_scores)
-    if num_classes is None:
-        num_classes = model_scores.shape[1]
-    
-    # Create dataframe with original index preserved
-    df = pd.DataFrame({
-        'original_index': np.arange(n_samples),
-        'label': target_labels
-    })
-    
-    # Add model scores and decoy scores for each class
-    for k in range(num_classes):
-        df[f'model_score_class_{k}'] = model_scores[:, k]
-        df[f'decoy_score_class_{k}'] = decoy_scores[:, k]
-    
-    # Compute max scores
-    df['max_model_score'] = model_scores.max(axis=1)
-    df['max_decoy_score'] = decoy_scores.max(axis=1)
-    df['predicted_class'] = model_scores.argmax(axis=1)
-    
-    # Overall max score (competition between all model scores and decoy scores)
-    df['max_score'] = df[['max_model_score', 'max_decoy_score']].max(axis=1)
-    
-    # Estimate π₀ for each class using Storey method
-    pi0_estimates = []
-    for k in range(num_classes):
-        # Get samples where this class is NOT the true class (negatives for class k)
-        neg_mask = (target_labels != k)
-        null_distribution_k = model_scores[neg_mask, k]
-        query_k = model_scores[:, k]
-        
-        # Compute p-values for class k
-        p_values_k = empirical_p_values(null_distribution_k, query_k)
-        
-        # Estimate π₀^k
-        pi0_k = estimate_pi0_storey(p_values_k)
-        pi0_estimates.append(pi0_k)
-        
-        # Store p-values for this class
-        df[f'p_value_class_{k}'] = p_values_k
-    
-    # Estimate overall π₀ = [1 - Σ(1 - π₀^k)]_{[0,1]}
-    pi0_overall = 1 - sum([(1 - pi0_k) for pi0_k in pi0_estimates])
-    pi0_overall = max(0.0, min(1.0, pi0_overall))  # Crop to [0,1]
-    
-    df['pi0_overall'] = pi0_overall
-    
-    # ============ GROUND TRUTH FDR ============
-    # Ground truth doesn't know about decoys!
-    # Sort only by max_model_score
-    df_sorted_gt = df.sort_values(by='max_model_score', ascending=False).reset_index(drop=True)
-    
-    num_incorrect = 0
-    num_total = 0
-    
-    fdr_gt_list = []
-    for index, row in df_sorted_gt.iterrows():
-        num_total += 1
-        # Check if prediction is correct
-        if row['predicted_class'] != row['label']:
-            num_incorrect += 1
-        
-        fdr_gt = num_incorrect / num_total
-        fdr_gt_list.append(fdr_gt)
-    
-    df_sorted_gt['fdr_gt'] = fdr_gt_list
-    
-    # Make monotone - идем с КОНЦА к НАЧАЛУ
-    q_values_gt = df_sorted_gt['fdr_gt'].values.copy()
-    for i in range(len(q_values_gt) - 2, -1, -1):  # от предпоследнего к первому
-        q_values_gt[i] = min(q_values_gt[i], q_values_gt[i + 1])
-    
-    df_sorted_gt['q_values_ground_truth'] = q_values_gt
-    
-    # ВАЖНО: маппим обратно используя original_index
-    gt_mapping = dict(zip(df_sorted_gt['original_index'], 
-                          df_sorted_gt['q_values_ground_truth']))
-    df['q_values_ground_truth'] = df['original_index'].map(gt_mapping)
-    
-    # ============ MIX-MAX FDR (TDC-like) ============
-    # Sort by max_score (this includes competition with decoys)
-    df_sorted_by_max = df.sort_values(by='max_score', ascending=False).reset_index(drop=True)
-    
-    # ВАЖНО: Сначала посчитаем cumulative counts идя СВЕРХУ ВНИЗ
-    num_decoy_wins_cumsum = []
-    num_target_wins_cumsum = []
-    decoy_count = 0
-    target_count = 0
-    
-    for index, row in df_sorted_by_max.iterrows():
-        if row['max_model_score'] >= row['max_decoy_score']:  # Target wins
-            target_count += 1
-        else:  # Decoy wins
-            decoy_count += 1
-        
-        num_decoy_wins_cumsum.append(decoy_count)
-        num_target_wins_cumsum.append(target_count)
-    
-    df_sorted_by_max['num_decoy_wins'] = num_decoy_wins_cumsum
-    df_sorted_by_max['num_target_wins'] = num_target_wins_cumsum
-    
-    # Теперь считаем FDR только для target wins
-    fdr_mm_list = []
-    for index, row in df_sorted_by_max.iterrows():
-        if row['max_model_score'] >= row['max_decoy_score']:  # Target wins
-            if row['num_target_wins'] > 0:
-                fdr_mm = (row['num_decoy_wins'] + 1.0) / row['num_target_wins']
-                fdr_mm_list.append(fdr_mm)
-            else:
-                fdr_mm_list.append(1.0)
-        else:  # Decoy wins
-            fdr_mm_list.append(np.nan)
-    
-    df_sorted_by_max['fdr_mm'] = fdr_mm_list
-    
-    # Make q-values monotone - ТОЛЬКО ДЛЯ TARGET WINS, идем с конца к началу
-    q_values_mm = df_sorted_by_max['fdr_mm'].values.copy()
-    
-    # Находим последний target win и начинаем с него
-    last_valid_idx = -1
-    for i in range(len(q_values_mm) - 1, -1, -1):
-        if not np.isnan(q_values_mm[i]):
-            last_valid_idx = i
-            break
-    
-    if last_valid_idx >= 0:
-        prev = q_values_mm[last_valid_idx]
-        for i in range(last_valid_idx - 1, -1, -1):
-            if not np.isnan(q_values_mm[i]):
-                q_values_mm[i] = min(prev, q_values_mm[i])
-                prev = q_values_mm[i]
-    
-    df_sorted_by_max['q_values_mm'] = q_values_mm
-    
-    print("\nMM Debug:")
-    print(f"First 30 samples (sorted by max_score DESC):")
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', 300)
-    print(df_sorted_by_max[['original_index', 'label', 'predicted_class', 'max_model_score', 
-                            'max_decoy_score', 'max_score', 'num_decoy_wins', 'num_target_wins',
-                            'fdr_mm', 'q_values_mm']].head(30))
-    
-    # После подсчета FDR
-    print(f"\nFirst target win index: {df_sorted_by_max[df_sorted_by_max['max_model_score'] >= df_sorted_by_max['max_decoy_score']].index[0] if len(df_sorted_by_max[df_sorted_by_max['max_model_score'] >= df_sorted_by_max['max_decoy_score']]) > 0 else 'None'}")
-
-    # Покажи первые несколько target wins
-    target_wins_df = df_sorted_by_max[df_sorted_by_max['max_model_score'] >= df_sorted_by_max['max_decoy_score']].head(20)
-    print("\nFirst 20 target wins:")
-    print(target_wins_df[['original_index', 'max_model_score', 'max_decoy_score', 'num_decoy_wins', 'num_target_wins', 'fdr_mm', 'q_values_mm']])
+    # Enforce monotonicity
+    for i in range(n-2, -1, -1):
+        q_values[i] = min(q_values[i], q_values[i+1])
     
     # Map back to original order
-    mm_mapping = dict(zip(df_sorted_by_max['original_index'], 
-                          df_sorted_by_max['q_values_mm']))
-    df['q_values_mm'] = df['original_index'].map(mm_mapping)
+    original_q = np.zeros(n)
+    original_q[sorted_idx] = q_values
+    return original_q
+
+
+def calculate_fdr2_qvalues(target_scores, decoy_scores):
+    """Calculate FDR2 q-values using TDC (LABEL-FREE)."""
+    n = len(target_scores)
+    combined_scores = np.maximum(target_scores, decoy_scores)
+    is_target_win = (target_scores > decoy_scores).astype(int)
     
-    # ============ BH method ============
-    # Use decoys as null distribution
-    p_values_overall = []
-    for i in range(n_samples):
-        max_model = model_scores[i].max()
-        decoy_vals = decoy_scores[i]
-        p_val = (decoy_vals >= max_model).sum() / num_classes
-        p_values_overall.append(p_val)
+    sort_idx = np.argsort(combined_scores)[::-1]
+    sorted_wins = is_target_win[sort_idx]
     
-    p_values_overall = np.array(p_values_overall)
-    df['p_value_overall'] = p_values_overall
-    df['q_values_bh_storey'] = benjamini_hochberg_storey(p_values_overall)
+    fdr2_values = np.zeros(n)
+    n_decoy_wins = 0
     
-    print("\nQ-values statistics:")
-    print(f"GT q-values range: {df['q_values_ground_truth'].min():.4f} - {df['q_values_ground_truth'].max():.4f}")
-    print(f"MM q-values range: {df['q_values_mm'].min():.4f} - {df['q_values_mm'].max():.4f} (excluding NaN)")
-    print(f"MM NaN count: {df['q_values_mm'].isna().sum()}")
-    print(f"Samples with q < 0.1:")
-    print(f"  GT: {(df['q_values_ground_truth'] < 0.1).sum()}")
-    print(f"  MM: {(df['q_values_mm'] < 0.1).sum()}")
+    for i in range(n):
+        if sorted_wins[i] == 0:
+            n_decoy_wins += 1
+        fdr2_values[i] = (2 * n_decoy_wins) / (i + 1) if (i + 1) > 0 else 0
     
-    return df, pi0_overall, pi0_estimates
+    # Enforce monotonicity
+    q_fdr2 = np.minimum.accumulate(fdr2_values[::-1])[::-1]
+    
+    # Map back to original order
+    final_q_fdr2 = np.zeros(n)
+    for i in range(n):
+        final_q_fdr2[sort_idx[i]] = q_fdr2[i]
+    
+    return final_q_fdr2
+
+
+def calculate_mixmax_qvalues(model_scores, decoy_scores):
+    """
+    Mix-Max FDR control from Keich et al. with pi0=0.
+    
+    With pi0=0, FDP_MM(s_th) simplifies to:
+    
+    FDP_MM(s_th) = 
+        SUM_{Zj > s_th} [ P(f(t) <= Zj) / P(g(t) <= Zj) ]_[0,1]
+        ─────────────────────────────────────────────────────────
+                        1{ f(t) >= s_th }
+    
+    Where:
+        f(t)  = target score per sample (model score for predicted class)
+        Zj    = decoy scores (null distribution)
+        g(t)  = mix_max_score = max(f(t), Z) per sample
+        s_th  = threshold swept from high to low
+    
+    P(f(t) <= z)  estimated empirically over all samples
+    P(g(t) <= z)  estimated empirically over all samples
+    """
+    n = len(model_scores)
+    pi0 = 0.0
+
+    # ── Scores ────────────────────────────────────────────────────────────
+    pred_classes  = model_scores.argmax(axis=1)           # (n,)
+    target_scores = model_scores[np.arange(n), pred_classes]  # f(t), shape (n,)
+    null_scores   = decoy_scores[np.arange(n), pred_classes]  # Zj,   shape (n,)
+
+    mix_max_scores = np.maximum(target_scores, null_scores)    # g(t), shape (n,)
+
+    print(f"  target_scores : [{target_scores.min():.3f}, {target_scores.max():.3f}]"
+          f" mean={target_scores.mean():.3f}")
+    print(f"  null_scores   : [{null_scores.min():.3f}, {null_scores.max():.3f}]"
+          f" mean={null_scores.mean():.3f}")
+    print(f"  mix_max_scores: [{mix_max_scores.min():.3f}, {mix_max_scores.max():.3f}]"
+          f" mean={mix_max_scores.mean():.3f}")
+    print(f"  target wins   : {(target_scores > null_scores).mean():.3f}")
+
+    # ── Unique null values and their counts ───────────────────────────────
+    # We need: for each unique Zj value, 
+    #   how many targets f(t) <= Zj  → P_F(Zj)
+    #   how many mix_max g(t) <= Zj  → P_G(Zj)
+    unique_z, counts_z = np.unique(null_scores, return_counts=True)
+    n_unique_z = len(unique_z)
+    n_obs      = len(null_scores)
+
+    sorted_targets  = np.sort(target_scores)    # for searchsorted
+    sorted_mixmax   = np.sort(mix_max_scores)   # for searchsorted
+
+    # Empirical CDFs at each unique Zj
+    # P(f(t) <= z)
+    counts_f_leq_z = np.searchsorted(sorted_targets, unique_z, side='right')
+    P_F_leq_z      = counts_f_leq_z / n
+
+    # P(g(t) <= z)  where g(t) = mix_max
+    counts_g_leq_z = np.searchsorted(sorted_mixmax, unique_z, side='right')
+    P_G_leq_z      = counts_g_leq_z / n
+
+    # R_j = [ P(f(t) <= Zj) / P(g(t) <= Zj) ]_[0,1]
+    # This is the per-Zj contribution to FDP numerator
+    R_j = np.divide(
+        P_F_leq_z, P_G_leq_z,
+        out=np.zeros_like(P_F_leq_z),
+        where=P_G_leq_z > 0
+    )
+    R_j = np.clip(R_j, 0, 1)
+
+    print(f"  R_j: min={R_j.min():.4f}, max={R_j.max():.4f}, mean={R_j.mean():.4f}")
+
+    # ── Sweep thresholds from high to low ─────────────────────────────────
+    # Thresholds = sorted target scores descending
+    # At each threshold s_th:
+    #   denominator = number of target scores >= s_th = i+1 (discoveries)
+    #   numerator   = SUM_{Zj > s_th} R_j[j]
+    
+    all_thresholds = np.sort(target_scores)[::-1]   # sweep target scores
+    fdr_values     = np.zeros(n)
+
+    for i, s_th in enumerate(all_thresholds):
+        D = i + 1   # number of discoveries (f(t) >= s_th)
+
+        # Sum over Zj > s_th of R_j
+        # unique_z is sorted → find first index where unique_z > s_th
+        idx_start = np.searchsorted(unique_z, s_th, side='right')
+
+        if idx_start >= n_unique_z:
+            numerator = 0.0
+        else:
+            # Weight each R_j by how many null scores equal that unique_z value
+            numerator = np.sum(R_j[idx_start:] * counts_z[idx_start:])
+
+        fdr_values[i] = numerator / D if D > 0 else 0.0
+
+    print(f"  fdr_values: min={fdr_values.min():.4f}, max={fdr_values.max():.4f}")
+    print(f"  fdr_values first 5: {fdr_values[:5]}")
+
+    # ── Monotone q-values ─────────────────────────────────────────────────
+    q_values = np.minimum.accumulate(fdr_values[::-1])[::-1]
+
+    print(f"  q_values: min={q_values.min():.4f}, max={q_values.max():.4f}")
+    print(f"  unique q_values: {len(np.unique(q_values))}")
+
+    # ── Map back to original order ────────────────────────────────────────
+    sorted_idx = np.argsort(target_scores)[::-1]
+    final_q    = np.zeros(n)
+    final_q[sorted_idx] = q_values
+
+    return final_q
+
+
+def control_fdr_mixmax(model_scores, target_labels, decoy_scores):
+    """Mix-Max FDR control. pi0=0 (no truly null samples)."""
+    n_samples = len(model_scores)
+
+    df = pd.DataFrame({
+        'original_index'  : np.arange(n_samples),
+        'label'           : target_labels,
+        'max_model_score' : model_scores.max(axis=1),
+        'max_decoy_score' : decoy_scores.max(axis=1),
+        'predicted_class' : model_scores.argmax(axis=1),
+        'pred_class_score': model_scores[np.arange(n_samples),
+                                         model_scores.argmax(axis=1)],
+    })
+
+    # Mix-Max q-values
+    q_mixmax = calculate_mixmax_qvalues(model_scores, decoy_scores)
+    df['q_values_mixmax'] = q_mixmax
+
+    # Ground Truth (oracle, uses labels)
+    df_gt = df.sort_values('pred_class_score', ascending=False).reset_index(drop=True)
+    num_incorrect = 0
+    fdr_gt = []
+    for idx, row in df_gt.iterrows():
+        if row['predicted_class'] != row['label']:
+            num_incorrect += 1
+        fdr_gt.append(num_incorrect / (idx + 1))
+    q_gt = np.array(fdr_gt)
+    for i in range(len(q_gt) - 2, -1, -1):
+        q_gt[i] = min(q_gt[i], q_gt[i + 1])
+    df_gt['q_values_ground_truth'] = q_gt
+    gt_map = dict(zip(df_gt['original_index'], df_gt['q_values_ground_truth']))
+    df['q_values_ground_truth'] = df['original_index'].map(gt_map)
+
+    return df
+
+
+print("✓ Mix-Max (correct formula) loaded")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Accuracy-estimation helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def estimate_pi0_storey_from_df(df, q_value_column):
+    """Estimate π₀ from DataFrame (LABEL-FREE)."""
+    if 'p_values' in df.columns:
+        p_values = df['p_values'].dropna().values
+        if len(p_values) > 0:
+            lambda_range = np.arange(0.05, 0.95, 0.05)
+            pi0_estimates = [np.mean(p_values > lam) / (1 - lam) for lam in lambda_range]
+            return min(1.0, max(0, np.mean(pi0_estimates)))
+    
+    if 'pi0_storey' in df.columns:
+        pi0 = df['pi0_storey'].iloc[0]
+        if not np.isnan(pi0):
+            return pi0
+    
+    # Mix-Max: pi0 = 0 by design
+    if q_value_column == 'q_values_mixmax':
+        return 0.0
+
+    # Fallback: empirical estimate
+    score_column = 'max_model_score' if 'max_model_score' in df.columns else 'model_score'
+    if score_column not in df.columns:
+        return 0.5
+    
+    df_sorted = df.sort_values(by=score_column, ascending=False).reset_index(drop=True)
+    top_k = max(100, int(0.2 * len(df_sorted)))
+    top_samples = df_sorted.head(top_k)
+    is_correct = (top_samples['predicted_class'] == top_samples['label']).astype(int)
+    return np.clip(1 - is_correct.mean(), 0.01, 0.99)
+
+
+def compute_ground_truth_curve(df):
+    """Compute Ground Truth curve (uses labels — oracle)."""
+    score_column = 'max_model_score' if 'max_model_score' in df.columns else 'model_score'
+    if score_column not in df.columns:
+        return pd.DataFrame({'q_value': [0.05], 'accuracy': [0.5]})
+    
+    df_gt = df.sort_values(by=score_column, ascending=False).reset_index(drop=True)
+    
+    if 'q_values_ground_truth' in df_gt.columns:
+        df_gt = df_gt[~df_gt['q_values_ground_truth'].isna()].copy()
+        q_col = 'q_values_ground_truth'
+    else:
+        df_gt['is_correct'] = (df_gt['predicted_class'] == df_gt['label']).astype(int)
+        num_incorrect = 0
+        q_values_gt = []
+        for idx in range(len(df_gt)):
+            if df_gt.loc[idx, 'is_correct'] == 0:
+                num_incorrect += 1
+            q_values_gt.append(num_incorrect / (idx + 1))
+        df_gt['q_values_ground_truth'] = q_values_gt
+        q_col = 'q_values_ground_truth'
+    
+    df_gt['is_correct'] = (df_gt['predicted_class'] == df_gt['label']).astype(int)
+    df_gt['n_discoveries'] = np.arange(1, len(df_gt) + 1)
+    df_gt['TP_true'] = df_gt['is_correct'].cumsum()
+    df_gt['FP_true'] = df_gt['n_discoveries'] - df_gt['TP_true']
+    
+    total_correct   = df_gt['is_correct'].sum()
+    total_incorrect = len(df_gt) - total_correct
+    total_samples   = len(df)
+    
+    df_gt['TN_true']       = total_incorrect - df_gt['FP_true']
+    df_gt['FN_true']       = total_correct   - df_gt['TP_true']
+    df_gt['Accuracy_true'] = (df_gt['TP_true'] + df_gt['TN_true']) / total_samples
+    
+    return df_gt[[q_col, 'Accuracy_true']].rename(
+        columns={q_col: 'q_value_gt', 'Accuracy_true': 'accuracy_gt'})
+
+
+def compute_method_estimation_curve(df, q_value_column, pi0):
+    """Compute LABEL-FREE estimation curve with correct threshold-matched true accuracy."""
+    total_samples = len(df)
+    df_method = df[~df[q_value_column].isna()].copy()
+    
+    if len(df_method) == 0:
+        return pd.DataFrame()
+    
+    # Sort by q-value ascending (best discoveries first)
+    df_method = df_method.sort_values(by=q_value_column, ascending=True).reset_index(drop=True)
+    df_method['n_discoveries'] = np.arange(1, len(df_method) + 1)
+    
+    # ── Label-free estimation (pi0=0 for Mix-Max) ─────────────────────────
+    df_method['FP_est'] = df_method['n_discoveries'] * df_method[q_value_column]
+    df_method['TP_est'] = df_method['n_discoveries'] - df_method['FP_est']
+    df_method['TN_est'] = total_samples * pi0 - df_method['FP_est']
+    df_method['FN_est'] = total_samples * (1 - pi0) - df_method['TP_est']
+    
+    df_method['FP_est'] = np.maximum(0, df_method['FP_est'])
+    df_method['TP_est'] = np.maximum(0, df_method['TP_est'])
+    df_method['TN_est'] = np.maximum(0, df_method['TN_est'])
+    df_method['FN_est'] = np.maximum(0, df_method['FN_est'])
+    
+    df_method['Accuracy_est'] = (df_method['TP_est'] + df_method['TN_est']) / total_samples
+
+    # ── True accuracy AT SAME threshold (uses labels) ─────────────────────
+    # For each row i: true accuracy among the top i discoveries
+    df_method['is_correct'] = (
+        df_method['predicted_class'] == df_method['label']
+    ).astype(int)
+    
+    cum_correct = df_method['is_correct'].cumsum()
+    
+    # True acc at threshold = correct among accepted / total samples
+    # (same denominator as estimated acc)
+    df_method['Accuracy_true_at_threshold'] = cum_correct / total_samples
+
+    # Also compute standard cumulative accuracy among accepted only
+    df_method['Accuracy_true_among_accepted'] = (
+        cum_correct / df_method['n_discoveries']
+    )
+
+    # ── Error at each threshold ───────────────────────────────────────────
+    df_method['error_at_threshold'] = np.abs(
+        df_method['Accuracy_est'] - df_method['Accuracy_true_at_threshold']
+    )
+
+    return df_method[[
+        q_value_column,
+        'n_discoveries',
+        'Accuracy_est',
+        'Accuracy_true_at_threshold',
+        'Accuracy_true_among_accepted',
+        'error_at_threshold',
+        'FP_est', 'TP_est', 'FN_est', 'TN_est',
+        'is_correct',
+    ]].rename(columns={q_value_column: 'q_value_method'})
+
