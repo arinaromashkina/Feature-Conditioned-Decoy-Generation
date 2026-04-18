@@ -70,6 +70,284 @@ print(f"Baselines : {list(BASELINE_METHODS.keys())}")
 # HELPERS
 # ============================================================================
 
+def calculate_mixmax_qvalues(model_scores, decoy_scores):
+    """
+    Mix-Max FDR q-values, pi0=0.
+    
+    FDP_MM(s_th) = SUM_{Z_j > s_th} [F_hat(Z_j) / G_hat(Z_j)]_{[0,1]}
+                  ──────────────────────────────────────────────────────
+                              #{i : f_i >= s_th}
+    
+    f_i = target score (model score for predicted class)
+    Z_j = decoy score  (decoy score for predicted class)
+    g_i = max(f_i, Z_i) = mix-max score
+    """
+    n = len(model_scores)
+
+    pred_classes  = model_scores.argmax(axis=1)
+    target_scores = model_scores[np.arange(n), pred_classes]
+    null_scores   = decoy_scores[np.arange(n), pred_classes]
+
+    # ── Защита от NaN/Inf ─────────────────────────────────────────────────
+    nan_mask = ~np.isfinite(null_scores) | ~np.isfinite(target_scores)
+    if nan_mask.any():
+        print(f"  ⚠ NaN/Inf: {nan_mask.sum()}/{n} — заменяем медианой")
+        target_scores = np.where(
+            np.isfinite(target_scores), target_scores, np.nanmedian(target_scores))
+        null_scores   = np.where(
+            np.isfinite(null_scores), null_scores, np.nanmedian(null_scores))
+
+    mix_max_scores = np.maximum(target_scores, null_scores)
+
+    print(f"  target_scores : [{target_scores.min():.3f}, {target_scores.max():.3f}]"
+          f" mean={target_scores.mean():.3f}")
+    print(f"  null_scores   : [{null_scores.min():.3f}, {null_scores.max():.3f}]"
+          f" mean={null_scores.mean():.3f}")
+    print(f"  mix_max_scores: [{mix_max_scores.min():.3f}, {mix_max_scores.max():.3f}]"
+          f" mean={mix_max_scores.mean():.3f}")
+    print(f"  target wins   : {(target_scores > null_scores).mean():.3f}")
+
+    # ── Empirical CDFs ────────────────────────────────────────────────────
+    # Для числителя суммируем по уникальным значениям Z_j
+    unique_z, counts_z = np.unique(null_scores, return_counts=True)
+    n_unique_z         = len(unique_z)
+
+    sorted_targets = np.sort(target_scores)
+    sorted_mixmax  = np.sort(mix_max_scores)
+
+    # F_hat(z) = #{f_i <= z} / n
+    P_F = np.searchsorted(sorted_targets, unique_z, side='right') / n
+    # G_hat(z) = #{g_i <= z} / n
+    P_G = np.searchsorted(sorted_mixmax,  unique_z, side='right') / n
+
+    # R_j = clip(F_hat(Z_j) / G_hat(Z_j), 0, 1)
+    R_j = np.divide(P_F, P_G,
+                    out=np.zeros_like(P_F),
+                    where=P_G > 0)
+    R_j = np.clip(R_j, 0.0, 1.0)
+
+    print(f"  R_j: min={R_j.min():.4f}, max={R_j.max():.4f}, mean={R_j.mean():.4f}")
+
+    # ── Sweep thresholds (target scores descending) ───────────────────────
+    sort_idx       = np.argsort(target_scores)[::-1]   # индексы: от макс к мин
+    sorted_targets_desc = target_scores[sort_idx]
+
+    fdr_values = np.zeros(n)
+
+    # Предвычислим суффиксные суммы R_j * counts_z (от макс Z к мин Z)
+    # unique_z отсортирован по возрастанию → суффикс = сумма для Z_j > s_th
+    suffix_R = np.cumsum((R_j * counts_z)[::-1])[::-1]
+    # suffix_R[k] = sum_{j>=k} R_j * counts_z[j]  = SUM_{Z_j >= unique_z[k]} R_j
+
+    for i, s_th in enumerate(sorted_targets_desc):
+        D = i + 1  # число discoveries
+
+        # Хотим SUM_{Z_j > s_th} R_j * counts_z[j]
+        # = suffix_R[k] где k = первый индекс с unique_z[k] > s_th
+        k = np.searchsorted(unique_z, s_th, side='right')
+
+        numerator      = suffix_R[k] if k < n_unique_z else 0.0
+        fdr_values[i]  = numerator / D
+
+    print(f"  fdr_values: min={fdr_values.min():.4f}, max={fdr_values.max():.4f}")
+    print(f"  fdr_values first 5: {fdr_values[:5]}")
+
+    # ── Монотонные q-values ───────────────────────────────────────────────
+    # fdr_values[i] = FDP при пороге sorted_targets_desc[i]
+    # q_value[i] = min_{k>=i} fdr_values[k]  (монотонизация)
+    q_values = np.minimum.accumulate(fdr_values[::-1])[::-1]
+
+    print(f"  q_values: min={q_values.min():.4f}, max={q_values.max():.4f}")
+    print(f"  unique q_values: {len(np.unique(q_values))}")
+
+    # ── Маппинг обратно на оригинальные индексы ───────────────────────────
+    final_q          = np.zeros(n)
+    final_q[sort_idx] = q_values
+
+    return final_q
+
+
+def control_fdr_mixmax(model_scores, target_labels, decoy_scores):
+    """Mix-Max FDR control. pi0=0."""
+    n_samples = len(model_scores)
+
+    pred_classes = model_scores.argmax(axis=1)
+
+    df = pd.DataFrame({
+        'original_index'  : np.arange(n_samples),
+        'label'           : target_labels,
+        'predicted_class' : pred_classes,
+        'pred_class_score': model_scores[np.arange(n_samples), pred_classes],
+    })
+
+    df['q_values_mixmax'] = calculate_mixmax_qvalues(model_scores, decoy_scores)
+
+    # Ground truth q-values (oracle, для диагностики — не для графика accuracy)
+    df_gt = df.sort_values('pred_class_score', ascending=False).reset_index(drop=True)
+    num_incorrect = 0
+    fdr_gt = []
+    for idx, row in df_gt.iterrows():
+        if row['predicted_class'] != row['label']:
+            num_incorrect += 1
+        fdr_gt.append(num_incorrect / (idx + 1))
+    q_gt = np.array(fdr_gt)
+    for i in range(len(q_gt) - 2, -1, -1):
+        q_gt[i] = min(q_gt[i], q_gt[i + 1])
+    df_gt['q_values_ground_truth'] = q_gt
+    gt_map = dict(zip(df_gt['original_index'], df_gt['q_values_ground_truth']))
+    df['q_values_ground_truth'] = df['original_index'].map(gt_map)
+
+    return df
+
+
+def compute_method_estimation_curve(df, q_value_column, pi0=0.0):
+    """
+    Для каждого порога (sweep по pred_class_score descending):
+      - n_discoveries    = число принятых пикселей
+      - Accuracy_est     = 1 - q_value  [label-free, accuracy среди принятых]
+      - Accuracy_true_at_threshold = реальная accuracy среди принятых [oracle]
+      - error            = |est - true|
+    """
+    df_method = df[~df[q_value_column].isna()].copy()
+    if len(df_method) == 0:
+        return pd.DataFrame()
+
+    # Сортируем по pred_class_score descending —
+    # именно в этом порядке строились q-values
+    df_method = df_method.sort_values(
+        'pred_class_score', ascending=False
+    ).reset_index(drop=True)
+
+    df_method['n_discoveries'] = np.arange(1, len(df_method) + 1)
+
+    # ── Label-free accuracy estimation ────────────────────────────────────
+    # При пороге q: среди принятых пикселей ожидаемая доля ошибок = q
+    # → Accuracy_est = 1 - q
+    df_method['Accuracy_est'] = 1.0 - df_method[q_value_column]
+    # Clip на [0,1] на случай q > 1 (не должно быть, но на всякий)
+    df_method['Accuracy_est'] = df_method['Accuracy_est'].clip(0.0, 1.0)
+
+    # ── True accuracy среди принятых ─────────────────────────────────────
+    df_method['is_correct'] = (
+        df_method['predicted_class'] == df_method['label']
+    ).astype(int)
+
+    cum_correct = df_method['is_correct'].cumsum()
+
+    # Accuracy СРЕДИ ПРИНЯТЫХ (тот же знаменатель что и в Accuracy_est)
+    df_method['Accuracy_true_at_threshold'] = (
+        cum_correct / df_method['n_discoveries']
+    )
+
+    # ── Error ─────────────────────────────────────────────────────────────
+    df_method['error_at_threshold'] = np.abs(
+        df_method['Accuracy_est'] - df_method['Accuracy_true_at_threshold']
+    )
+
+    return df_method[[
+        q_value_column,
+        'n_discoveries',
+        'pred_class_score',
+        'Accuracy_est',
+        'Accuracy_true_at_threshold',
+        'error_at_threshold',
+        'is_correct',
+    ]].rename(columns={q_value_column: 'q_value_method'})
+
+
+def plot_accuracy_estimation(df, q_value_column, method_name,
+                             corruption_name, save_dir):
+    """
+    График accuracy estimation.
+    
+    Две линии:
+      - Accuracy_est (label-free)              — красная сплошная
+      - True accuracy среди принятых (oracle)  — синяя пунктирная
+    
+    Ground Truth НЕ рисуем (она для FDR curve, не для accuracy).
+    X ось = q-value порог.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    df_method = compute_method_estimation_curve(df, q_value_column, pi0=0.0)
+
+    if len(df_method) == 0:
+        print(f"  ✗ {corruption_name}: пустой curve")
+        return
+
+    # ── Лучший порог = где Accuracy_est максимальна ───────────────────────
+    # Accuracy_est = 1 - q → максимум при минимальном q
+    # Но нам нужно минимум MIN_PIXELS принятых
+    MIN_PIX = 50
+    valid    = df_method[df_method['n_discoveries'] >= MIN_PIX]
+    if len(valid) == 0:
+        valid = df_method
+
+    best_idx  = valid['Accuracy_est'].idxmax()
+    best_row  = valid.loc[best_idx]
+    best_q    = float(best_row['q_value_method'])
+    est_acc   = float(best_row['Accuracy_est'])
+    true_acc  = float(best_row['Accuracy_true_at_threshold'])
+    error     = float(best_row['error_at_threshold'])
+    n_acc     = int(best_row['n_discoveries'])
+
+    # ── Subsample для графика (иначе миллионы точек) ──────────────────────
+    step    = max(1, len(df_method) // 1000)
+    df_plot = df_method.iloc[::step].copy()
+
+    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+
+    # Наша оценка (label-free)
+    ax.plot(df_plot['q_value_method'], df_plot['Accuracy_est'],
+            color='#E53935', lw=2.5, label='Accuracy est (label-free, Mix-Max)')
+
+    # Реальная accuracy среди принятых
+    ax.plot(df_plot['q_value_method'], df_plot['Accuracy_true_at_threshold'],
+            color='#1976D2', lw=2.5, linestyle='--',
+            label='True accuracy (among accepted)')
+
+    # Оптимальный порог
+    ax.axvline(best_q, color='gray', lw=1.5, linestyle=':', alpha=0.8)
+    ax.scatter([best_q], [est_acc],  color='#E53935', s=100, zorder=5)
+    ax.scatter([best_q], [true_acc], color='#1976D2', s=100, zorder=5)
+
+    # FDR reference
+    for fdr_ref in [0.05, 0.10, 0.20]:
+        ax.axvline(fdr_ref, color='gray', linestyle=':', alpha=0.25, lw=1)
+        ax.text(fdr_ref, 0.03, f'q={fdr_ref}',
+                ha='center', va='bottom', fontsize=8, alpha=0.5)
+
+    ax.set_xlabel('q-value threshold', fontweight='bold')
+    ax.set_ylabel('Accuracy (among accepted)', fontweight='bold')
+    ax.set_ylim(0, 1.05)
+    q_max = min(0.8, df_method['q_value_method'].max() + 0.02)
+    ax.set_xlim(0, q_max)
+    ax.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=10)
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    title = (f"{corruption_name.replace('.tensor','')}\n"
+             f"q*={best_q:.3f}  "
+             f"est={est_acc:.3f}  "
+             f"true@q*={true_acc:.3f}  "
+             f"err={error:.3f}  "
+             f"n={n_acc}/{len(df_method)}")
+    ax.set_title(title, fontweight='bold', fontsize=11)
+
+    fname = os.path.join(
+        save_dir,
+        corruption_name.replace('.tensor', '').replace('.png', '') + f'_{method_name}'
+    )
+    plt.savefig(fname + '.png', dpi=150, bbox_inches='tight')
+    plt.savefig(fname + '.pdf', bbox_inches='tight')
+    plt.close()
+
+    print(f"  ✓ {corruption_name}: π₀=0.000  best_q={best_q:.3f}"
+          f"  n_accepted={n_acc}/{len(df_method)}"
+          f"  est_acc={est_acc:.3f}  true_acc={true_acc:.3f}"
+          f"  error={error:.3f}")
+    
+
+
 def get_scores_from_ds(dataset):
     """Вытащить scores и labels из ScoreFeatureDataset."""
     loader = DataLoader(dataset, batch_size=256, shuffle=False)
@@ -211,7 +489,7 @@ print("PROCESSING TEST FILES")
 print("="*70)
 
 #test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))
-test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))[:10]
+test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))[:30]
 print(f"Найдено {len(test_files)} тестовых файлов")
 
 results     = []
