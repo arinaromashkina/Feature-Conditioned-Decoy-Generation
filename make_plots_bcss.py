@@ -7,11 +7,8 @@ from tqdm import tqdm
 import os
 import glob
 
-from data_processing.score_feature_dataset import (
-    ScoreFeatureDataset,
-    create_score_feature_dataset_bcss,
-)
-from data_processing.negative_scores_pool import collect_negative_scores
+from data_processing.score_feature_dataset import *
+from data_processing.negative_scores_pool import *
 from flows.shift_flow import ScoreShiftFlowWrapper
 from utils.other_methods import *
 from utils.visualize_distributions import *
@@ -30,7 +27,7 @@ NUM_CLASSES    = 5
 FEATURE_DIM    = 64
 PATH_DATA      = '../../data/BCSS/training/bcss.mini.training.torch'
 TEST_FOLDER    = '../../data/BCSS/test/'
-FLOWS_PATH     = 'BCSS/bcss_score_shift_flow.pth'
+FLOWS_PATH     = 'BCSS/bcss_score_shift_flow_new.pth'
 SUBSAMPLE_STEP = 10
 MIN_PIXELS     = 50        # минимум пикселей чтобы считать threshold-accuracy
 
@@ -70,283 +67,6 @@ print(f"Baselines : {list(BASELINE_METHODS.keys())}")
 # HELPERS
 # ============================================================================
 
-def calculate_mixmax_qvalues(model_scores, decoy_scores):
-    """
-    Mix-Max FDR q-values, pi0=0.
-    
-    FDP_MM(s_th) = SUM_{Z_j > s_th} [F_hat(Z_j) / G_hat(Z_j)]_{[0,1]}
-                  ──────────────────────────────────────────────────────
-                              #{i : f_i >= s_th}
-    
-    f_i = target score (model score for predicted class)
-    Z_j = decoy score  (decoy score for predicted class)
-    g_i = max(f_i, Z_i) = mix-max score
-    """
-    n = len(model_scores)
-
-    pred_classes  = model_scores.argmax(axis=1)
-    target_scores = model_scores[np.arange(n), pred_classes]
-    null_scores   = decoy_scores[np.arange(n), pred_classes]
-
-    # ── Защита от NaN/Inf ─────────────────────────────────────────────────
-    nan_mask = ~np.isfinite(null_scores) | ~np.isfinite(target_scores)
-    if nan_mask.any():
-        print(f"  ⚠ NaN/Inf: {nan_mask.sum()}/{n} — заменяем медианой")
-        target_scores = np.where(
-            np.isfinite(target_scores), target_scores, np.nanmedian(target_scores))
-        null_scores   = np.where(
-            np.isfinite(null_scores), null_scores, np.nanmedian(null_scores))
-
-    mix_max_scores = np.maximum(target_scores, null_scores)
-
-    print(f"  target_scores : [{target_scores.min():.3f}, {target_scores.max():.3f}]"
-          f" mean={target_scores.mean():.3f}")
-    print(f"  null_scores   : [{null_scores.min():.3f}, {null_scores.max():.3f}]"
-          f" mean={null_scores.mean():.3f}")
-    print(f"  mix_max_scores: [{mix_max_scores.min():.3f}, {mix_max_scores.max():.3f}]"
-          f" mean={mix_max_scores.mean():.3f}")
-    print(f"  target wins   : {(target_scores > null_scores).mean():.3f}")
-
-    # ── Empirical CDFs ────────────────────────────────────────────────────
-    # Для числителя суммируем по уникальным значениям Z_j
-    unique_z, counts_z = np.unique(null_scores, return_counts=True)
-    n_unique_z         = len(unique_z)
-
-    sorted_targets = np.sort(target_scores)
-    sorted_mixmax  = np.sort(mix_max_scores)
-
-    # F_hat(z) = #{f_i <= z} / n
-    P_F = np.searchsorted(sorted_targets, unique_z, side='right') / n
-    # G_hat(z) = #{g_i <= z} / n
-    P_G = np.searchsorted(sorted_mixmax,  unique_z, side='right') / n
-
-    # R_j = clip(F_hat(Z_j) / G_hat(Z_j), 0, 1)
-    R_j = np.divide(P_F, P_G,
-                    out=np.zeros_like(P_F),
-                    where=P_G > 0)
-    R_j = np.clip(R_j, 0.0, 1.0)
-
-    print(f"  R_j: min={R_j.min():.4f}, max={R_j.max():.4f}, mean={R_j.mean():.4f}")
-
-    # ── Sweep thresholds (target scores descending) ───────────────────────
-    sort_idx       = np.argsort(target_scores)[::-1]   # индексы: от макс к мин
-    sorted_targets_desc = target_scores[sort_idx]
-
-    fdr_values = np.zeros(n)
-
-    # Предвычислим суффиксные суммы R_j * counts_z (от макс Z к мин Z)
-    # unique_z отсортирован по возрастанию → суффикс = сумма для Z_j > s_th
-    suffix_R = np.cumsum((R_j * counts_z)[::-1])[::-1]
-    # suffix_R[k] = sum_{j>=k} R_j * counts_z[j]  = SUM_{Z_j >= unique_z[k]} R_j
-
-    for i, s_th in enumerate(sorted_targets_desc):
-        D = i + 1  # число discoveries
-
-        # Хотим SUM_{Z_j > s_th} R_j * counts_z[j]
-        # = suffix_R[k] где k = первый индекс с unique_z[k] > s_th
-        k = np.searchsorted(unique_z, s_th, side='right')
-
-        numerator      = suffix_R[k] if k < n_unique_z else 0.0
-        fdr_values[i]  = numerator / D
-
-    print(f"  fdr_values: min={fdr_values.min():.4f}, max={fdr_values.max():.4f}")
-    print(f"  fdr_values first 5: {fdr_values[:5]}")
-
-    # ── Монотонные q-values ───────────────────────────────────────────────
-    # fdr_values[i] = FDP при пороге sorted_targets_desc[i]
-    # q_value[i] = min_{k>=i} fdr_values[k]  (монотонизация)
-    q_values = np.minimum.accumulate(fdr_values[::-1])[::-1]
-
-    print(f"  q_values: min={q_values.min():.4f}, max={q_values.max():.4f}")
-    print(f"  unique q_values: {len(np.unique(q_values))}")
-
-    # ── Маппинг обратно на оригинальные индексы ───────────────────────────
-    final_q          = np.zeros(n)
-    final_q[sort_idx] = q_values
-
-    return final_q
-
-
-def control_fdr_mixmax(model_scores, target_labels, decoy_scores):
-    """Mix-Max FDR control. pi0=0."""
-    n_samples = len(model_scores)
-
-    pred_classes = model_scores.argmax(axis=1)
-
-    df = pd.DataFrame({
-        'original_index'  : np.arange(n_samples),
-        'label'           : target_labels,
-        'predicted_class' : pred_classes,
-        'pred_class_score': model_scores[np.arange(n_samples), pred_classes],
-    })
-
-    df['q_values_mixmax'] = calculate_mixmax_qvalues(model_scores, decoy_scores)
-
-    # Ground truth q-values (oracle, для диагностики — не для графика accuracy)
-    df_gt = df.sort_values('pred_class_score', ascending=False).reset_index(drop=True)
-    num_incorrect = 0
-    fdr_gt = []
-    for idx, row in df_gt.iterrows():
-        if row['predicted_class'] != row['label']:
-            num_incorrect += 1
-        fdr_gt.append(num_incorrect / (idx + 1))
-    q_gt = np.array(fdr_gt)
-    for i in range(len(q_gt) - 2, -1, -1):
-        q_gt[i] = min(q_gt[i], q_gt[i + 1])
-    df_gt['q_values_ground_truth'] = q_gt
-    gt_map = dict(zip(df_gt['original_index'], df_gt['q_values_ground_truth']))
-    df['q_values_ground_truth'] = df['original_index'].map(gt_map)
-
-    return df
-
-
-def compute_method_estimation_curve(df, q_value_column, pi0=0.0):
-    """
-    Для каждого порога (sweep по pred_class_score descending):
-      - n_discoveries    = число принятых пикселей
-      - Accuracy_est     = 1 - q_value  [label-free, accuracy среди принятых]
-      - Accuracy_true_at_threshold = реальная accuracy среди принятых [oracle]
-      - error            = |est - true|
-    """
-    df_method = df[~df[q_value_column].isna()].copy()
-    if len(df_method) == 0:
-        return pd.DataFrame()
-
-    # Сортируем по pred_class_score descending —
-    # именно в этом порядке строились q-values
-    df_method = df_method.sort_values(
-        'pred_class_score', ascending=False
-    ).reset_index(drop=True)
-
-    df_method['n_discoveries'] = np.arange(1, len(df_method) + 1)
-
-    # ── Label-free accuracy estimation ────────────────────────────────────
-    # При пороге q: среди принятых пикселей ожидаемая доля ошибок = q
-    # → Accuracy_est = 1 - q
-    df_method['Accuracy_est'] = 1.0 - df_method[q_value_column]
-    # Clip на [0,1] на случай q > 1 (не должно быть, но на всякий)
-    df_method['Accuracy_est'] = df_method['Accuracy_est'].clip(0.0, 1.0)
-
-    # ── True accuracy среди принятых ─────────────────────────────────────
-    df_method['is_correct'] = (
-        df_method['predicted_class'] == df_method['label']
-    ).astype(int)
-
-    cum_correct = df_method['is_correct'].cumsum()
-
-    # Accuracy СРЕДИ ПРИНЯТЫХ (тот же знаменатель что и в Accuracy_est)
-    df_method['Accuracy_true_at_threshold'] = (
-        cum_correct / df_method['n_discoveries']
-    )
-
-    # ── Error ─────────────────────────────────────────────────────────────
-    df_method['error_at_threshold'] = np.abs(
-        df_method['Accuracy_est'] - df_method['Accuracy_true_at_threshold']
-    )
-
-    return df_method[[
-        q_value_column,
-        'n_discoveries',
-        'pred_class_score',
-        'Accuracy_est',
-        'Accuracy_true_at_threshold',
-        'error_at_threshold',
-        'is_correct',
-    ]].rename(columns={q_value_column: 'q_value_method'})
-
-
-def plot_accuracy_estimation(df, q_value_column, method_name,
-                             corruption_name, save_dir):
-    """
-    График accuracy estimation.
-    
-    Две линии:
-      - Accuracy_est (label-free)              — красная сплошная
-      - True accuracy среди принятых (oracle)  — синяя пунктирная
-    
-    Ground Truth НЕ рисуем (она для FDR curve, не для accuracy).
-    X ось = q-value порог.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-
-    df_method = compute_method_estimation_curve(df, q_value_column, pi0=0.0)
-
-    if len(df_method) == 0:
-        print(f"  ✗ {corruption_name}: пустой curve")
-        return
-
-    # ── Лучший порог = где Accuracy_est максимальна ───────────────────────
-    # Accuracy_est = 1 - q → максимум при минимальном q
-    # Но нам нужно минимум MIN_PIXELS принятых
-    MIN_PIX = 50
-    valid    = df_method[df_method['n_discoveries'] >= MIN_PIX]
-    if len(valid) == 0:
-        valid = df_method
-
-    best_idx  = valid['Accuracy_est'].idxmax()
-    best_row  = valid.loc[best_idx]
-    best_q    = float(best_row['q_value_method'])
-    est_acc   = float(best_row['Accuracy_est'])
-    true_acc  = float(best_row['Accuracy_true_at_threshold'])
-    error     = float(best_row['error_at_threshold'])
-    n_acc     = int(best_row['n_discoveries'])
-
-    # ── Subsample для графика (иначе миллионы точек) ──────────────────────
-    step    = max(1, len(df_method) // 1000)
-    df_plot = df_method.iloc[::step].copy()
-
-    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
-
-    # Наша оценка (label-free)
-    ax.plot(df_plot['q_value_method'], df_plot['Accuracy_est'],
-            color='#E53935', lw=2.5, label='Accuracy est (label-free, Mix-Max)')
-
-    # Реальная accuracy среди принятых
-    ax.plot(df_plot['q_value_method'], df_plot['Accuracy_true_at_threshold'],
-            color='#1976D2', lw=2.5, linestyle='--',
-            label='True accuracy (among accepted)')
-
-    # Оптимальный порог
-    ax.axvline(best_q, color='gray', lw=1.5, linestyle=':', alpha=0.8)
-    ax.scatter([best_q], [est_acc],  color='#E53935', s=100, zorder=5)
-    ax.scatter([best_q], [true_acc], color='#1976D2', s=100, zorder=5)
-
-    # FDR reference
-    for fdr_ref in [0.05, 0.10, 0.20]:
-        ax.axvline(fdr_ref, color='gray', linestyle=':', alpha=0.25, lw=1)
-        ax.text(fdr_ref, 0.03, f'q={fdr_ref}',
-                ha='center', va='bottom', fontsize=8, alpha=0.5)
-
-    ax.set_xlabel('q-value threshold', fontweight='bold')
-    ax.set_ylabel('Accuracy (among accepted)', fontweight='bold')
-    ax.set_ylim(0, 1.05)
-    q_max = min(0.8, df_method['q_value_method'].max() + 0.02)
-    ax.set_xlim(0, q_max)
-    ax.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=10)
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    title = (f"{corruption_name.replace('.tensor','')}\n"
-             f"q*={best_q:.3f}  "
-             f"est={est_acc:.3f}  "
-             f"true@q*={true_acc:.3f}  "
-             f"err={error:.3f}  "
-             f"n={n_acc}/{len(df_method)}")
-    ax.set_title(title, fontweight='bold', fontsize=11)
-
-    fname = os.path.join(
-        save_dir,
-        corruption_name.replace('.tensor', '').replace('.png', '') + f'_{method_name}'
-    )
-    plt.savefig(fname + '.png', dpi=150, bbox_inches='tight')
-    plt.savefig(fname + '.pdf', bbox_inches='tight')
-    plt.close()
-
-    print(f"  ✓ {corruption_name}: π₀=0.000  best_q={best_q:.3f}"
-          f"  n_accepted={n_acc}/{len(df_method)}"
-          f"  est_acc={est_acc:.3f}  true_acc={true_acc:.3f}"
-          f"  error={error:.3f}")
-    
-
 
 def get_scores_from_ds(dataset):
     """Вытащить scores и labels из ScoreFeatureDataset."""
@@ -369,65 +89,6 @@ def load_bcss_test_file(fpath):
     return ScoreFeatureDataset(predictions, features, predictions, labels)
 
 
-def true_accuracy_full(model_scores, labels_np):
-    """
-    Обычная accuracy по всем пикселям.
-    Это ground truth с которым сравниваем ВСЕХ.
-    """
-    pred = model_scores.argmax(axis=1)
-    return float((pred == labels_np).mean())
-
-
-def true_accuracy_at_threshold(model_scores, labels_np, conf_threshold):
-    """
-    Реальная accuracy только среди пикселей
-    где max_score >= conf_threshold.
-    Знаменатель = число принятых пикселей.
-    """
-    pred          = model_scores.argmax(axis=1)
-    max_scores    = model_scores[np.arange(len(model_scores)), pred]
-    mask          = max_scores >= conf_threshold
-    n_accepted    = mask.sum()
-    if n_accepted < MIN_PIXELS:
-        return np.nan, 0
-    acc = float((pred[mask] == labels_np[mask]).mean())
-    return acc, int(n_accepted)
-
-
-def find_best_mixmax_threshold(df_curve):
-    """
-    Найти q* где Accuracy_est максимальна.
-    Вернуть: est_acc, true_acc_at_q, error, q*, n_accepted
-    
-    df_curve — результат compute_method_estimation_curve().
-    Колонки которые нам нужны:
-        q_value_method          — q-value порог
-        Accuracy_est            — наша оценка accuracy (label-free)
-        Accuracy_true_at_threshold — реальная accuracy среди принятых
-        error_at_threshold      — |est - true_at_threshold|
-        n_discoveries           — сколько пикселей принято
-    """
-    if len(df_curve) == 0:
-        return dict(
-            mixmax_est=np.nan,
-            mixmax_true_at_q=np.nan,
-            mixmax_error=np.nan,
-            mixmax_best_q=np.nan,
-            mixmax_n_accepted=0,
-        )
-
-    best_idx = df_curve['Accuracy_est'].idxmax()
-    row      = df_curve.loc[best_idx]
-
-    return dict(
-        mixmax_est       = float(row['Accuracy_est']),
-        mixmax_true_at_q = float(row['Accuracy_true_at_threshold']),
-        mixmax_error     = float(row['error_at_threshold']),
-        mixmax_best_q    = float(row['q_value_method']),
-        mixmax_n_accepted= int(row['n_discoveries']),
-    )
-
-
 # ============================================================================
 # ДАННЫЕ И FLOW
 # ============================================================================
@@ -435,10 +96,21 @@ def find_best_mixmax_threshold(df_curve):
 print("\n" + "="*70)
 print("LOADING TRAINING DATA")
 print("="*70)
+data = torch.load(PATH_DATA)
 
-data     = torch.load(PATH_DATA)
-train_ds = create_score_feature_dataset_bcss(data, DEVICE)
-train_scores, train_labels = get_scores_from_ds(train_ds)
+# ── Строим пулы (новая логика) ────────────────────────────────────────────
+pool_score, pool_vectors, train_scores, train_labels = \
+    build_error_conditioned_pools_bcss(data, verbose=True)
+
+# ── Создаём train dataset с decoys ───────────────────────────────────────
+train_ds = create_score_feature_dataset_bcss_v2(
+    data,
+    pool_score,
+    pool_vectors,
+    strategy='score_coord',
+    device=DEVICE
+)
+
 print(f"Train scores shape: {train_scores.shape}")
 for c in range(NUM_CLASSES):
     print(f"  Class {c}: {(train_labels == c).sum()} samples")
@@ -461,7 +133,7 @@ if os.path.exists(FLOWS_PATH):
 else:
     print("Training ScoreShiftFlow...")
     flow.train_flow(
-        train_ds, epochs=30, lr=3e-4, batch_size=256,
+        train_ds, epochs=40, lr=3e-4, batch_size=256,
         device=DEVICE, patience=5, grad_clip=1.0)
     torch.save(flow.state_dict(), FLOWS_PATH)
     print(f"✓ Flow saved to {FLOWS_PATH}")
@@ -469,8 +141,8 @@ else:
 # Source данные для baseline методов (40% subsample от train)
 print("\nПодготовка source данных для baselines...")
 np.random.seed(42)
-subset_idx  = np.random.choice(len(train_ds), int(0.4 * len(train_ds)), replace=False)
-subset_ds   = Subset(train_ds, subset_idx.tolist())
+subset_idx = np.random.choice(len(train_ds), int(0.4 * len(train_ds)), replace=False)
+subset_ds  = Subset(train_ds, subset_idx.tolist())
 
 source_logits, _, source_labels = flow.generate_decoys(subset_ds, device=DEVICE)
 source_logits_t = torch.tensor(source_logits).to(DEVICE)
@@ -488,15 +160,19 @@ print("\n" + "="*70)
 print("PROCESSING TEST FILES")
 print("="*70)
 
-#test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))
-test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))[:30]
+test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))
 print(f"Найдено {len(test_files)} тестовых файлов")
 
 results     = []
 all_fdr_dfs = {}   # tile_name → df_mm (для графиков accuracy)
 
+all_results = []
+
 for fpath in tqdm(test_files, desc="Test files"):
     tile_name = os.path.basename(fpath)
+    print(f"\n{'─'*60}")
+    print(f"  TILE: {tile_name}")
+    print(f"{'─'*60}")
 
     # ── Загрузка тайла ───────────────────────────────────────────────────
     try:
@@ -506,300 +182,473 @@ for fpath in tqdm(test_files, desc="Test files"):
         continue
 
     # ── Генерация decoys ─────────────────────────────────────────────────
-    model_scores, decoy_scores, labels_np = flow.generate_decoys(
-        test_ds, device=DEVICE)
+    ms, ds_flow, ls = flow.generate_decoys(test_ds, device=DEVICE)
 
     # Subsample
-    model_scores = model_scores[::SUBSAMPLE_STEP]
-    decoy_scores = decoy_scores[::SUBSAMPLE_STEP]
-    labels_np    = labels_np[::SUBSAMPLE_STEP]
-    n            = len(labels_np)
+    ms       = ms[::SUBSAMPLE_STEP]
+    ds_flow  = ds_flow[::SUBSAMPLE_STEP]
+    ls       = ls[::SUBSAMPLE_STEP]
+    n        = len(ls)
 
-    # ── True accuracy (обычная, по всем пикселям) ─────────────────────────
-    # ЭТО главная метрика с которой сравниваем всех
-    acc_full = true_accuracy_full(model_scores, labels_np)
+    if n < MIN_PIXELS:
+        print(f"  ✗ Too few pixels: {n}")
+        continue
 
-    # ── Mix-Max FDR curve ────────────────────────────────────────────────
-    df_mm    = control_fdr_mixmax(model_scores, labels_np, decoy_scores)
-    df_curve = compute_method_estimation_curve(df_mm, 'q_values_mixmax', pi0=0.0)
+    target_logits = torch.tensor(ms).to(DEVICE)
+    target_labels = torch.tensor(ls).to(DEVICE)
 
-    # Находим q* где наша оценка accuracy максимальна
-    mm_result = find_best_mixmax_threshold(df_curve)
+    true_acc_full = float((ms.argmax(axis=1) == ls).mean())
 
-    all_fdr_dfs[tile_name] = (df_mm, df_curve)
+    scaled_target = target_logits / temp
 
-    # ── Baseline методы ──────────────────────────────────────────────────
-    # Каждый возвращает одно число — оценку accuracy по всему тайлу
-    target_logits_t = torch.tensor(model_scores).to(DEVICE)
-    scaled_target   = target_logits_t / temp
+    # ── Baseline methods ──────────────────────────────────────────────────
+    baseline_estimates = {}
+    baseline_errors    = {}
 
-    baseline_est = {}
-    for mname, mfunc in BASELINE_METHODS.items():
+    for method_name, method_func in BASELINE_METHODS.items():
         try:
-            baseline_est[mname] = float(
-                mfunc(scaled_source, source_labels_t, scaled_target))
+            estimate = float(method_func(scaled_source, source_labels_t, scaled_target))
         except Exception as e:
-            print(f"  {tile_name} – {mname}: FAILED ({e})")
-            baseline_est[mname] = np.nan
+            print(f"  {method_name}: FAILED ({e})")
+            estimate = np.nan
+        estimate = np.clip(estimate, 0.0, 1.0)
+        error = abs(estimate - true_acc_full)
+        baseline_estimates[method_name] = estimate
+        baseline_errors[method_name]    = error
+        print(f"  {method_name}: {estimate:.3f} (error: {error:.3f})")
 
-    results.append({
-        'tile'            : tile_name,
-        'n_pixels'        : n,
-        # ── Единственный ground truth для сравнения всех методов ──────
-        'true_acc_full'   : acc_full,
-        # ── Mix-Max результаты ────────────────────────────────────────
-        **mm_result,       # mixmax_est, mixmax_true_at_q, mixmax_error,
-                           # mixmax_best_q, mixmax_n_accepted
-        'mixmax_frac_accepted': mm_result['mixmax_n_accepted'] / max(n, 1),
-        # ── Baselines ─────────────────────────────────────────────────
-        **baseline_est,
-    })
+    print(f"{'─'*60}")
 
-results_df = pd.DataFrame(results)
-print(f"\n✓ Обработано {len(results_df)} тайлов")
+    # ── Подготовка данных ─────────────────────────────────────────────────
+    true_labels   = ls
+    n_samples     = len(true_labels)
+
+    pred_scores   = np.max(ms, axis=1)
+    pred_label    = np.argmax(ms, axis=1)
+    decoy_scores  = np.max(ds_flow, axis=1)
+
+    correct_pred  = (true_labels == pred_label).astype(int)
+
+    print(f"  accuracy : {correct_pred.sum() / n_samples:.4f}")
+    print(f"  error/pi0: {1 - correct_pred.sum() / n_samples:.4f}")
+
+    # ── Figure 1: Score distributions ─────────────────────────────────────
+    bin_width  = 0.05
+    bins       = np.arange(pred_scores.min() - 0.5,
+                           pred_scores.max() + 0.5, bin_width)
+    stat       = 'density'
+    plot_alpha = 0.3
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    sns.histplot(pred_scores,
+                 bins=bins, stat=stat, color='blue',   kde=True,
+                 fill=True, alpha=plot_alpha, label='model_mixture', ax=ax)
+    sns.histplot(decoy_scores,
+                 bins=bins, stat=stat, color='orange', kde=True,
+                 fill=True, alpha=plot_alpha, label='null', ax=ax)
+    sns.histplot(pred_scores[true_labels != pred_label],
+                 bins=bins, stat=stat, color='red',    kde=True,
+                 fill=True, alpha=plot_alpha, label='incorrect', ax=ax)
+    ax.set_title(f'{tile_name[:30]} — Score Distributions')
+    ax.legend()
+    plt.tight_layout()
+    safe_name = 'shift_flow_' + tile_name.replace('.tensor', '')
+    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_scores.png', dpi=150)
+    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_scores.pdf')
+    plt.show(); plt.close()
+
+    # ── True FDR (ground truth) ───────────────────────────────────────────
+    sort_idx           = np.argsort(pred_scores)
+    pred_scores_sorted = pred_scores[sort_idx]
+    label_sorted       = true_labels[sort_idx]
+    pred_label_sorted  = pred_label[sort_idx]
+    correct_pred_s     = (label_sorted == pred_label_sorted).astype(int)
+
+    FD       = 1 - correct_pred_s
+    FD_CF    = np.cumsum(FD[::-1])[::-1]
+    D_CF     = np.arange(0, n_samples)[::-1] + 1
+    FDR_true = FD_CF / D_CF
+    FDR_true = np.clip(FDR_true, 0, 1)
+    QVAL_true = np.minimum.accumulate(FDR_true)
+    QVAL_true = np.clip(QVAL_true, 0, 1)
+
+    # ── Mix-Max FDR ───────────────────────────────────────────────────────
+    pi0 = 0.0
+
+    sorted_decoys            = np.sort(decoy_scores)
+    unique_z_vals, counts_z  = np.unique(decoy_scores, return_counts=True)
+    n_unique_z               = len(unique_z_vals)
+
+    counts_w_leq_z = np.searchsorted(pred_scores_sorted, unique_z_vals, side='left')
+    counts_z_leq_z = np.searchsorted(sorted_decoys,      unique_z_vals, side='left')
+
+    P_W_leq_z = (counts_w_leq_z - pi0 * counts_z_leq_z) / ((1 - pi0) * n_samples)
+    P_W_leq_z = np.clip(P_W_leq_z, 0, 1)
+    P_Y_leq_z = counts_z_leq_z / n_samples
+    P_Y_leq_z = np.clip(P_Y_leq_z, 0, 1)
+
+    R_j = np.divide(P_W_leq_z, P_Y_leq_z,
+                    out=np.zeros_like(P_W_leq_z),
+                    where=P_Y_leq_z > 0)
+    R_j = np.clip(R_j, 0, 1)
+
+    all_thresholds = pred_scores_sorted[::-1]
+    fdr_values     = np.zeros(n_samples)
+
+    for i, T in enumerate(all_thresholds):
+        D     = i + 1
+        F_0   = pi0 * np.sum(decoy_scores > T)
+        z_idx = np.searchsorted(unique_z_vals, T, side='left')
+        if z_idx >= n_unique_z:
+            F_1 = 0.0
+        else:
+            F_1 = (1 - pi0) * np.sum(R_j[z_idx:] * counts_z[z_idx:])
+        fdr_values[i] = (F_0 + F_1) / D if D > 0 else 0
+
+    fdr_values  = np.clip(fdr_values, 0, 1)
+    QVAL_mixmax = np.minimum.accumulate(fdr_values[::-1])
+    QVAL_mixmax = np.clip(QVAL_mixmax, 0, 1)
+
+    # ── Figure 2: FDR vs score threshold ──────────────────────────────────
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(pred_scores_sorted, QVAL_mixmax, label='Mix-Max FDR')
+    ax.plot(pred_scores_sorted, QVAL_true,   label='True FDR')
+    ax.set_xlabel('Score threshold')
+    ax.set_ylabel('q-value (FDR)')
+    ax.set_title(f'{tile_name[:30]} — FDR vs Score Threshold')
+    ax.legend(); ax.grid()
+    plt.tight_layout()
+    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_fdr_vs_score.png', dpi=150)
+    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_fdr_vs_score.pdf')
+    plt.show(); plt.close()
+
+    # ── TDC FDR ───────────────────────────────────────────────────────────
+    TDC       = (pred_scores > decoy_scores).astype(int)
+    TDC_score = np.maximum(pred_scores, decoy_scores)
+
+    tdc_sort_idx = np.argsort(TDC_score)
+    TDC_score_s  = TDC_score[tdc_sort_idx]
+    TDC_label_s  = TDC[tdc_sort_idx]
+
+    FD_CF_tdc = np.cumsum((1 - TDC_label_s)[::-1])[::-1]
+    D_CF_tdc  = np.arange(0, n_samples)[::-1] + 1 - FD_CF_tdc
+    D_CF_tdc  = np.maximum(D_CF_tdc, 1)
+    TDC_FDR   = FD_CF_tdc / D_CF_tdc
+    TDC_FDR   = np.clip(TDC_FDR, 0, 1)
+    QVAL_TDC  = np.minimum.accumulate(TDC_FDR)
+    QVAL_TDC  = np.clip(QVAL_TDC, 0, 1)
+
+    # ── Acc estimation ─────────────────────────────────────────────────────
+    pi0_tdc = np.clip(float(QVAL_TDC[0]),   0.0, 1.0)
+    pi0_mm  = np.clip(float(QVAL_mixmax[0]), 0.0, 1.0)
+
+    Acc_est    = np.zeros(n_samples)
+    Acc_est_MM = np.zeros(n_samples)
+    Acc_true   = np.zeros(n_samples)
+
+    for i in range(n_samples):
+        TP_true     = correct_pred_s[i:].sum()
+        TN_true     = (1 - correct_pred_s[:i]).sum()
+        Acc_true[i] = (TP_true + TN_true) / n_samples
+
+        accepted       = n_samples - i
+        FP_tdc         = accepted * QVAL_TDC[i]
+        TP_tdc         = accepted * (1 - QVAL_TDC[i])
+        TN_tdc         = n_samples * pi0_tdc - FP_tdc
+        Acc_est[i]     = np.clip((TP_tdc + TN_tdc) / n_samples, 0.0, 1.0)
+
+        FP_mm          = accepted * QVAL_mixmax[i]
+        TP_mm          = accepted * (1 - QVAL_mixmax[i])
+        TN_mm          = n_samples * pi0_mm - FP_mm
+        Acc_est_MM[i]  = np.clip((TP_mm + TN_mm) / n_samples, 0.0, 1.0)
+
+    Acc_true = np.clip(Acc_true, 0.0, 1.0)
+
+    # ── Figure 3: Acc & FDR vs normalised rank ────────────────────────────
+    normalized_rank = np.arange(n_samples) / n_samples
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(normalized_rank, QVAL_TDC,    label='TDC FDR')
+    ax.plot(normalized_rank, QVAL_mixmax, label='Mix-Max FDR')
+    ax.plot(normalized_rank, QVAL_true,   label='True FDR')
+    ax.plot(normalized_rank, Acc_true,    label='True Acc')
+    ax.plot(normalized_rank, Acc_est,     label='Est Acc with TDC')
+    ax.plot(normalized_rank, Acc_est_MM,  label='Est Acc with Mix-Max')
+    ax.set_xlabel('Normalized rank (fraction accepted)')
+    ax.set_ylabel('Value')
+    ax.set_title(f'{tile_name[:30]}')
+    ax.legend(); ax.grid()
+    plt.tight_layout()
+    plt.savefig(f'BCSS/figures/accuracy/{safe_name}_acc_fdr.png', dpi=150)
+    plt.savefig(f'BCSS/figures/accuracy/{safe_name}_acc_fdr.pdf')
+    plt.show(); plt.close()
+
+    # ── ACC_ST / ACC_TA metrics ────────────────────────────────────────────
+    acc_st_true    = Acc_true[0]
+    acc_ta_true    = Acc_true.max()
+
+    acc_st_est_tdc = Acc_est[0]
+    acc_ta_est_tdc = Acc_est.max()
+
+    acc_st_est_mm  = Acc_est_MM[0]
+    acc_ta_est_mm  = Acc_est_MM.max()
+
+    err_st_tdc = abs(acc_st_est_tdc - acc_st_true)
+    err_ta_tdc = abs(acc_ta_est_tdc - acc_ta_true)
+    err_st_mm  = abs(acc_st_est_mm  - acc_st_true)
+    err_ta_mm  = abs(acc_ta_est_mm  - acc_ta_true)
+
+    baseline_errors_ta = {}
+    for method_name in BASELINE_METHODS:
+        baseline_errors_ta[method_name] = abs(
+            baseline_estimates[method_name] - acc_ta_true)
+
+    print(f"\n  {'':28} {'ACC_ST':>10}  {'ACC_TA':>10}")
+    print(f"  {'─'*52}")
+    print(f"  {'True':<28} {acc_st_true:>10.4f}  {acc_ta_true:>10.4f}")
+    print(f"  {'TDC  (est | err)':<28} "
+          f"{acc_st_est_tdc:>6.4f}  {err_st_tdc:>+.4f}  "
+          f"{acc_ta_est_tdc:>6.4f}  {err_ta_tdc:>+.4f}")
+    print(f"  {'Mix-Max (est | err)':<28} "
+          f"{acc_st_est_mm:>6.4f}  {err_st_mm:>+.4f}  "
+          f"{acc_ta_est_mm:>6.4f}  {err_ta_mm:>+.4f}")
+
+    # ── Собираем результаты ────────────────────────────────────────────────
+    row = dict(
+        tile           = tile_name,
+        n_pixels       = n_samples,
+        true_acc       = true_acc_full,
+        acc_st_true    = acc_st_true,
+        acc_ta_true    = acc_ta_true,
+        acc_st_tdc     = acc_st_est_tdc,
+        acc_ta_tdc     = acc_ta_est_tdc,
+        err_st_tdc     = err_st_tdc,
+        err_ta_tdc     = err_ta_tdc,
+        acc_st_mm      = acc_st_est_mm,
+        acc_ta_mm      = acc_ta_est_mm,
+        err_st_mm      = err_st_mm,
+        err_ta_mm      = err_ta_mm,
+    )
+    for method_name in BASELINE_METHODS:
+        row[f'est_{method_name}']    = baseline_estimates[method_name]
+        row[f'err_{method_name}']    = baseline_errors[method_name]
+        row[f'err_ta_{method_name}'] = baseline_errors_ta[method_name]
+
+    all_results.append(row)
 
 
-# ============================================================================
-# ОШИБКИ
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGGREGATE SUMMARY
+# ═══════════════════════════════════════════════════════════════════════════════
+if all_results:
+    df = pd.DataFrame(all_results)
+    df.to_csv('BCSS/figures/comparison/shift_flow_results.csv', index=False)
+    print(f"\n✓ results.csv сохранён  ({len(df)} тайлов)")
 
-print("\n" + "="*70)
-print("ОШИБКИ")
-print("="*70)
+    print("\n" + "="*70)
+    print("AGGREGATE SUMMARY  (mean ± std across tiles)")
+    print("="*70)
+    print(f"\n  {'Metric':<35} {'Mean':>8}   {'Std':>8}   {'Type':>6}")
+    print(f"  {'─'*60}")
 
-baseline_methods = list(BASELINE_METHODS.keys())
+    acc_report = [
+        ('acc_st_true', 'True ACC_ST',       ''),
+        ('acc_ta_true', 'True ACC_TA',        ''),
+        ('acc_st_tdc',  'ENPE    est ACC_ST', 'ST'),
+        ('acc_ta_tdc',  'ENPE    est ACC_TA', 'TA'),
+        ('acc_st_mm',   'ENPE-TA est ACC_ST', 'ST'),
+        ('acc_ta_mm',   'ENPE-TA est ACC_TA', 'TA'),
+    ]
+    for col, name, kind in acc_report:
+        v = df[col].values
+        print(f"  {name:<35} {v.mean():>8.4f}   {v.std():>8.4f}   {kind:>6}")
 
-# ── Ошибка Mix-Max ────────────────────────────────────────────────────────
-# 1) vs true_acc_full   (сравниваем честно с конкурентами)
-# 2) vs true_acc_at_q*  (то что Mix-Max реально предсказывает)
-results_df['mixmax_err_vs_full'] = np.abs(
-    results_df['mixmax_est'] - results_df['true_acc_full'])
+    print(f"  {'─'*60}")
+    for method_name in BASELINE_METHODS:
+        col  = f'est_{method_name}'
+        name = f'{method_name} est ACC_ST'
+        v    = df[col].values
+        print(f"  {name:<35} {v.mean():>8.4f}   {v.std():>8.4f}   {'ST':>6}")
 
-# mixmax_error уже есть — это |mixmax_est - mixmax_true_at_q|
+    print(f"\n  {'─'*60}")
+    print(f"  ERRORS")
+    print(f"  {'─'*60}")
 
-# ── Ошибка baselines vs true_acc_full ────────────────────────────────────
-for m in baseline_methods:
-    results_df[f'err_{m}'] = np.abs(results_df[m] - results_df['true_acc_full'])
+    fdr_report = [
+        ('err_st_tdc', '|err| ENPE    vs ACC_ST'),
+        ('err_ta_tdc', '|err| ENPE    vs ACC_TA'),
+        ('err_st_mm',  '|err| ENPE-TA vs ACC_ST'),
+        ('err_ta_mm',  '|err| ENPE-TA vs ACC_TA'),
+    ]
+    for col, name in fdr_report:
+        v = df[col].values
+        print(f"  {name:<35} {v.mean():>8.4f}   {v.std():>8.4f}")
 
-# ── Сводка MAE ───────────────────────────────────────────────────────────
-print("\n" + "-"*60)
-print("MAE vs true_acc_full (одинаковый ground truth для всех)")
-print("-"*60)
+    print(f"  {'─'*60}")
+    for method_name in BASELINE_METHODS:
+        v_st = df[f'err_{method_name}'].values
+        v_ta = df[f'err_ta_{method_name}'].values
+        print(f"  {'|err| ' + method_name + ' vs ACC_ST':<35} "
+              f"{v_st.mean():>8.4f}   {v_st.std():>8.4f}")
+        print(f"  {'|err| ' + method_name + ' vs ACC_TA':<35} "
+              f"{v_ta.mean():>8.4f}   {v_ta.std():>8.4f}")
 
-mae_table = {}
-mae_table['Mix-Max'] = (
-    results_df['mixmax_err_vs_full'].mean(),
-    results_df['mixmax_err_vs_full'].std(),
-)
-for m in baseline_methods:
-    mae_table[m] = (
-        results_df[f'err_{m}'].mean(),
-        results_df[f'err_{m}'].std(),
+    print(f"\n  Full results table:")
+    print(df.to_string(index=False, float_format='{:.4f}'.format))
+
+    # =========================================================================
+    # FIGURE A: Bar chart — mean absolute error per method
+    # =========================================================================
+    method_names_bar = (
+        ['ENPE (ST)', 'ENPE (TA)', 'ENPE-TA (ST)', 'ENPE-TA (TA)'] +
+        [f'{m} (ST)' for m in BASELINE_METHODS] +
+        [f'{m} (TA)' for m in BASELINE_METHODS]
+    )
+    method_cols_bar = (
+        ['err_st_tdc', 'err_ta_tdc', 'err_st_mm', 'err_ta_mm'] +
+        [f'err_{m}' for m in BASELINE_METHODS] +
+        [f'err_ta_{m}' for m in BASELINE_METHODS]
+    )
+    means_bar = [df[c].mean() for c in method_cols_bar]
+    stds_bar  = [df[c].std()  for c in method_cols_bar]
+    colors_bar = (
+        ['#2196F3', '#1565C0', '#FF9800', '#E65100'] +
+        ['#4CAF50'] * len(BASELINE_METHODS) +
+        ['#388E3C'] * len(BASELINE_METHODS)
     )
 
-for method, (mae, std) in sorted(mae_table.items(), key=lambda x: x[1][0]):
-    print(f"  {method:<12}: MAE = {mae:.4f} ± {std:.4f}")
+    fig, ax = plt.subplots(figsize=(max(8, len(method_names_bar) * 0.9), 5))
+    x_pos = np.arange(len(method_names_bar))
+    ax.bar(x_pos, means_bar, yerr=stds_bar,
+           color=colors_bar, capsize=4, alpha=0.85,
+           edgecolor='black', linewidth=1,
+           error_kw=dict(elinewidth=1.2, ecolor='black'))
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(method_names_bar, rotation=35, ha='right')
+    ax.set_ylabel('Mean Absolute Error')
+    ax.set_xlabel('Method')
+    ax.grid(axis='y', linestyle='--', alpha=0.5)
+    ax.set_ylim(bottom=0)
 
-print("\n" + "-"*60)
-print("Mix-Max: est vs true_acc_at_q* (threshold-matched, без конкурентов)")
-print("-"*60)
-mae_at_q = results_df['mixmax_error'].mean()
-std_at_q = results_df['mixmax_error'].std()
-print(f"  Mix-Max       : MAE = {mae_at_q:.4f} ± {std_at_q:.4f}")
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#2196F3', alpha=0.85, label='ENPE (ST)'),
+        Patch(facecolor='#1565C0', alpha=0.85, label='ENPE (TA)'),
+        Patch(facecolor='#FF9800', alpha=0.85, label='ENPE-TA (ST)'),
+        Patch(facecolor='#E65100', alpha=0.85, label='ENPE-TA (TA)'),
+        Patch(facecolor='#4CAF50', alpha=0.85, label='Baseline (ST)'),
+        Patch(facecolor='#388E3C', alpha=0.85, label='Baseline (TA)'),
+    ]
+    ax.legend(handles=legend_elements, fontsize=10)
+    plt.tight_layout()
+    plt.savefig('BCSS/figures/comparison/shift_summary_bar_mean_error.png', dpi=150)
+    plt.savefig('BCSS/figures/comparison/shift_summary_bar_mean_error.pdf')
+    plt.show(); plt.close()
+    print("✓ summary_bar_mean_error")
 
-print("\n" + "-"*60)
-print("Per-tile сводка")
-print("-"*60)
-print(f"{'Tile':<45} {'true_full':>9} {'mm_est':>7} "
-      f"{'mm_true@q':>10} {'err@q':>7} {'q*':>5} {'accept%':>8}")
-print("-"*105)
-for _, row in results_df.sort_values('true_acc_full').iterrows():
-    print(
-        f"  {row['tile'][:43]:<43} "
-        f"{row['true_acc_full']:9.3f} "
-        f"{row['mixmax_est']:7.3f} "
-        f"{row['mixmax_true_at_q']:10.3f} "
-        f"{row['mixmax_error']:7.3f} "
-        f"{row['mixmax_best_q']:5.3f} "
-        f"{row['mixmax_frac_accepted']*100:7.1f}%"
-    )
-print(
-    f"\n  {'MEAN':<43} "
-    f"{results_df['true_acc_full'].mean():9.3f} "
-    f"{results_df['mixmax_est'].mean():7.3f} "
-    f"{results_df['mixmax_true_at_q'].mean():10.3f} "
-    f"{results_df['mixmax_error'].mean():7.3f} "
-    f"{'':5} "
-    f"{results_df['mixmax_frac_accepted'].mean()*100:7.1f}%"
-)
+    # =========================================================================
+    # FIGURE B: Scatter — estimated vs true accuracy
+    # =========================================================================
+    scatter_methods = []
 
+    scatter_methods.append(dict(
+        label='ENPE',      col_est='acc_st_tdc', col_true='acc_st_true',
+        panel=0, marker='o', color='#2196F3', zorder=4))
+    scatter_methods.append(dict(
+        label='ENPE-TA',   col_est='acc_st_mm',  col_true='acc_st_true',
+        panel=0, marker='s', color='#FF9800', zorder=4))
+    scatter_methods.append(dict(
+        label='ENPE',      col_est='acc_ta_tdc', col_true='acc_ta_true',
+        panel=1, marker='o', color='#2196F3', zorder=4))
+    scatter_methods.append(dict(
+        label='ENPE-TA',   col_est='acc_ta_mm',  col_true='acc_ta_true',
+        panel=1, marker='s', color='#FF9800', zorder=4))
 
-# ============================================================================
-# PLOT 1: Accuracy estimation curve (per tile)
-# ============================================================================
+    baseline_colors  = plt.cm.tab10(np.linspace(0, 0.9, len(BASELINE_METHODS)))
+    baseline_markers = ['D', '^', 'v', 'P', 'X', '*', 'h', '8']
+    for idx, method_name in enumerate(BASELINE_METHODS):
+        c = baseline_colors[idx]
+        m = baseline_markers[idx % len(baseline_markers)]
+        scatter_methods.append(dict(
+            label=method_name, col_est=f'est_{method_name}',
+            col_true='acc_st_true', panel=0,
+            marker=m, color=c, zorder=3))
+        scatter_methods.append(dict(
+            label=method_name, col_est=f'est_{method_name}',
+            col_true='acc_ta_true', panel=1,
+            marker=m, color=c, zorder=3))
 
-print("\n" + "="*70)
-print("ACCURACY ESTIMATION PLOTS (per tile)")
-print("="*70)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    panel_titles = ['ACC$_{ST}$', 'ACC$_{TA}$']
 
-for tile_name, (df_mm, _) in all_fdr_dfs.items():
-    plot_accuracy_estimation(
-        df_mm,
-        q_value_column  = 'q_values_mixmax',
-        method_name     = 'Mix-Max',
-        corruption_name = tile_name.replace('.tensor', ''),
-        save_dir        = 'BCSS/figures/accuracy',
-    )
+    for panel_idx, ax in enumerate(axes):
+        methods_in_panel = [sm for sm in scatter_methods
+                            if sm['panel'] == panel_idx]
+        all_vals = []
+        for sm in methods_in_panel:
+            all_vals.extend(df[sm['col_true']].values.tolist())
+            all_vals.extend(df[sm['col_est']].values.tolist())
 
+        lo = min(all_vals) - 0.02
+        hi = max(all_vals) + 0.02
+        ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5,
+                label='x=y', zorder=2)
 
-# ============================================================================
-# PLOT 2: Scatter — estimated vs true_acc_full (все методы)
-# ============================================================================
+        plotted_labels = set()
+        for sm in methods_in_panel:
+            lbl = (sm['label'] if sm['label'] not in plotted_labels
+                   else '_nolegend_')
+            ax.scatter(
+                df[sm['col_true']].values,
+                df[sm['col_est']].values,
+                label=lbl,
+                marker=sm['marker'],
+                color=sm['color'],
+                s=60, alpha=0.85,
+                zorder=sm['zorder']
+            )
+            plotted_labels.add(sm['label'])
 
-print("\n" + "="*70)
-print("SCATTER: estimated vs true_acc_full")
-print("="*70)
+        ax.set_xlabel('True Accuracy')
+        ax.set_ylabel('Estimated Accuracy')
+        ax.set_title(panel_titles[panel_idx])
+        ax.legend(fontsize=9, loc='upper left')
+        ax.grid(linestyle='--', alpha=0.4)
+        ax.set_aspect('equal', 'box')
 
-fig, ax = plt.subplots(figsize=(7, 7), constrained_layout=True)
+    plt.tight_layout()
+    plt.savefig('BCSS/figures/comparison/shift_scatter_estimated_vs_true_acc.png',
+                dpi=150)
+    plt.savefig('BCSS/figures/comparison/shift_scatter_estimated_vs_true_acc.pdf')
+    plt.show(); plt.close()
+    print("✓ scatter_estimated_vs_true_acc")
 
-# Mix-Max (est vs true_acc_full)
-ax.scatter(
-    results_df['true_acc_full'],
-    results_df['mixmax_est'],
-    color=COLORS['Mix-Max'], s=120, marker='*',
-    alpha=0.9, zorder=4,
-    label=f"Mix-Max  MAE={mae_table['Mix-Max'][0]:.4f}",
-)
+    # =========================================================================
+    # FIGURE C: True ACC_ST vs True ACC_TA
+    # =========================================================================
+    fig, ax = plt.subplots(figsize=(6, 5))
 
-# Baselines
-for m in baseline_methods:
-    mae_m = mae_table[m][0]
+    lo = min(df['acc_st_true'].min(), df['acc_ta_true'].min()) - 0.02
+    hi = max(df['acc_st_true'].max(), df['acc_ta_true'].max()) + 0.02
+
+    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y')
     ax.scatter(
-        results_df['true_acc_full'],
-        results_df[m],
-        color=COLORS.get(m, 'gray'), s=60, alpha=0.75,
-        label=f"{m}  MAE={mae_m:.4f}",
+        df['acc_st_true'].values,
+        df['acc_ta_true'].values,
+        color='steelblue', s=70, alpha=0.85, zorder=3
     )
-
-lo = results_df['true_acc_full'].min() - 0.03
-hi = results_df['true_acc_full'].max() + 0.03
-ax.plot([lo, hi], [lo, hi], 'k--', lw=2, alpha=0.5, label='Perfect')
-
-ax.set_xlabel('True Accuracy (все пиксели)', fontweight='bold')
-ax.set_ylabel('Estimated Accuracy', fontweight='bold')
-ax.set_title('Estimated vs True ACC\n(все методы, одинаковый ground truth)',
-             fontweight='bold')
-ax.set_xlim(lo, hi)
-ax.legend(fontsize=9, loc='upper left')
-ax.grid(True, alpha=0.3)
-
-plt.savefig('BCSS/figures/comparison/scatter_all_methods.png', dpi=300, bbox_inches='tight')
-plt.savefig('BCSS/figures/comparison/scatter_all_methods.pdf', bbox_inches='tight')
-plt.show(); plt.close()
-print("✓ scatter_all_methods")
-
-
-# ============================================================================
-# PLOT 3: Scatter — Mix-Max est vs true_acc_at_q* (threshold-matched)
-# ============================================================================
-
-print("\n" + "="*70)
-print("SCATTER: Mix-Max est vs true_acc_at_q*")
-print("="*70)
-
-fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-
-ax.scatter(
-    results_df['mixmax_true_at_q'],
-    results_df['mixmax_est'],
-    color=COLORS['Mix-Max'], s=100, alpha=0.85, zorder=3,
-)
-
-for _, row in results_df.iterrows():
-    ax.annotate(
-        row['tile'][:18],
-        (row['mixmax_true_at_q'], row['mixmax_est']),
-        fontsize=6, alpha=0.6, xytext=(4, 4), textcoords='offset points',
-    )
-
-lo = min(results_df['mixmax_true_at_q'].min(),
-         results_df['mixmax_est'].min()) - 0.02
-hi = max(results_df['mixmax_true_at_q'].max(),
-         results_df['mixmax_est'].max()) + 0.02
-ax.plot([lo, hi], [lo, hi], 'k--', lw=2, alpha=0.5)
-
-ax.set_xlabel('True ACC при q* (среди принятых пикселей)', fontweight='bold')
-ax.set_ylabel('Mix-Max Estimated ACC', fontweight='bold')
-ax.set_title(f'Mix-Max: Est vs True ACC при оптимальном q*\nMAE={mae_at_q:.4f}',
-             fontweight='bold')
-ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
-ax.grid(True, alpha=0.3)
-
-plt.savefig('BCSS/figures/comparison/scatter_mixmax_at_q.png', dpi=300, bbox_inches='tight')
-plt.savefig('BCSS/figures/comparison/scatter_mixmax_at_q.pdf', bbox_inches='tight')
-plt.show(); plt.close()
-print("✓ scatter_mixmax_at_q")
-
-
-# ============================================================================
-# PLOT 4: MAE bar chart
-# ============================================================================
-
-print("\n" + "="*70)
-print("MAE BAR CHART")
-print("="*70)
-
-# Все методы vs true_acc_full — честное сравнение
-sorted_mae = sorted(mae_table.items(), key=lambda x: x[1][0])
-m_names = [x[0] for x in sorted_mae]
-m_maes  = [x[1][0] for x in sorted_mae]
-m_stds  = [x[1][1] for x in sorted_mae]
-m_cols  = [COLORS.get(m, 'gray') for m in m_names]
-m_xlbls = ['Mix-Max\n(ours)' if m == 'Mix-Max' else m for m in m_names]
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
-
-# Left: все методы vs true_acc_full
-axes[0].bar(range(len(m_names)), m_maes, yerr=m_stds, capsize=5,
-            color=m_cols, alpha=0.8, edgecolor='black', linewidth=1)
-axes[0].set_title('MAE vs True Accuracy (все пиксели)\nОдинаковый ground truth для всех',
-                  fontweight='bold')
-axes[0].set_xlabel('Method', fontweight='bold')
-axes[0].set_ylabel('MAE', fontweight='bold')
-axes[0].set_xticks(range(len(m_names)))
-axes[0].set_xticklabels(m_xlbls, rotation=45, ha='right')
-axes[0].grid(axis='y', alpha=0.3)
-for i, (mae, std) in enumerate(zip(m_maes, m_stds)):
-    axes[0].text(i, mae + std + 0.002, f'{mae:.4f}',
-                 ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-# Right: Mix-Max vs true_acc_full  +  Mix-Max vs true_at_q*
-right_names = (['Mix-Max\nvs all pixels', 'Mix-Max\nvs true@q*'] +
-               [m for m in m_names if m != 'Mix-Max'])
-right_maes  = ([mae_table['Mix-Max'][0], mae_at_q] +
-               [mae_table[m][0] for m in m_names if m != 'Mix-Max'])
-right_stds  = ([mae_table['Mix-Max'][1], std_at_q] +
-               [mae_table[m][1] for m in m_names if m != 'Mix-Max'])
-right_cols  = (['#E53935', '#EF9A9A'] +
-               [COLORS.get(m, 'gray') for m in m_names if m != 'Mix-Max'])
-
-axes[1].bar(range(len(right_names)), right_maes, yerr=right_stds, capsize=5,
-            color=right_cols, alpha=0.8, edgecolor='black', linewidth=1)
-axes[1].set_title('Mix-Max: две метрики качества\nvs конкуренты (vs all pixels)',
-                  fontweight='bold')
-axes[1].set_xlabel('Method', fontweight='bold')
-axes[1].set_ylabel('MAE', fontweight='bold')
-axes[1].set_xticks(range(len(right_names)))
-axes[1].set_xticklabels(right_names, rotation=45, ha='right')
-axes[1].grid(axis='y', alpha=0.3)
-for i, (mae, std) in enumerate(zip(right_maes, right_stds)):
-    axes[1].text(i, mae + std + 0.002, f'{mae:.4f}',
-                 ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-plt.savefig('BCSS/figures/comparison/mae_bar.png', dpi=300, bbox_inches='tight')
-plt.savefig('BCSS/figures/comparison/mae_bar.pdf', bbox_inches='tight')
-plt.show(); plt.close()
-print("✓ mae_bar")
+    ax.set_xlabel('True ACC ST')
+    ax.set_ylabel('True ACC TA')
+    ax.set_title('True ACC_ST vs ACC_TA (per tile)')
+    ax.legend(fontsize=10)
+    ax.grid(linestyle='--', alpha=0.4)
+    ax.set_aspect('equal', 'box')
+    plt.tight_layout()
+    plt.savefig('BCSS/figures/comparison/shift_scatter_true_accst_vs_accta.png',
+                dpi=150)
+    plt.savefig('BCSS/figures/comparison/shift_scatter_true_accst_vs_accta.pdf')
+    plt.show(); plt.close()
+    print("✓ scatter_true_accst_vs_accta")
 
 
 # ============================================================================
@@ -822,43 +671,20 @@ try:
     ds_decoy = ds_decoy[::SUBSAMPLE_STEP]
     ls       = ls[::SUBSAMPLE_STEP]
 
-    # plot_score_distribution_with_decoys для каждого класса
     for i in range(NUM_CLASSES):
         plot_score_distribution_with_decoys(
-            train_scores[:, i],   # train scores для класса i
+            train_scores[:, i],
             train_labels,
-            ms[:, i],             # test scores для класса i
+            ms[:, i],
             ls,
-            ds_decoy[:, i],       # decoy scores для класса i
-            filename  = f"BCSS/figures/diagnostics/scores_dist_class{i}",
-            title     = f"Score Distribution with Decoys — Class {i}",
-            xlim      = (-10, 10),
-            show_kde  = True,
-            class_id  = i,
+            ds_decoy[:, i],
+            filename = f"BCSS/figures/diagnostics/shift_scores_dist_class{i}",
+            title    = f"Score Distribution with Decoys — Class {i}",
+            xlim     = (-10, 10),
+            show_kde = True,
+            class_id = i,
         )
     print(f"✓ Score distributions сохранены для {NUM_CLASSES} классов")
 
 except Exception as e:
     print(f"✗ Ошибка при построении distributions: {e}")
-
-
-# ============================================================================
-# СОХРАНЕНИЕ
-# ============================================================================
-
-results_df.to_csv('BCSS/figures/comparison/results.csv', index=False)
-print("\n✓ results.csv сохранён")
-
-print("\n" + "="*70)
-print("ИТОГ")
-print("="*70)
-print(f"  Тайлов обработано   : {len(results_df)}")
-print(f"  Mean true_acc_full  : {results_df['true_acc_full'].mean():.3f} "
-      f"± {results_df['true_acc_full'].std():.3f}")
-print(f"\n  MAE (vs true_acc_full):")
-for method, (mae, std) in sorted(mae_table.items(), key=lambda x: x[1][0]):
-    marker = ' ← наш' if method == 'Mix-Max' else ''
-    print(f"    {method:<12}: {mae:.4f} ± {std:.4f}{marker}")
-print(f"\n  Mix-Max MAE vs true@q* : {mae_at_q:.4f} ± {std_at_q:.4f}")
-print(f"  Mix-Max avg accepted   : "
-      f"{results_df['mixmax_frac_accepted'].mean()*100:.1f}%")
