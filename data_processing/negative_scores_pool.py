@@ -18,6 +18,7 @@ from tqdm import tqdm
 # ─────────────────────────────────────────────────────────────────────────────
 # Updated dataset creation — null = full score vector with true class replaced
 # ─────────────────────────────────────────────────────────────────────────────
+MIN_POOL = 50
 
 def collect_negative_scores(model, train_dataset, num_classes=10, device='cuda'):
     """Collect negative scores for each class (unchanged)."""

@@ -16,6 +16,8 @@ from bisect import bisect
 import os
 from tqdm import tqdm
 
+MIN_POOL = 50
+
 def create_score_feature_dataset(dataset, cnn_model, negative_scores_pools,
                                   device='cuda'):
     """
@@ -209,4 +211,226 @@ def create_score_feature_dataset_bcss(
         all_features,
         all_target_decoy,
         all_labels
+    )
+
+def build_error_conditioned_pools(train_scores: np.ndarray,
+                                   train_labels: np.ndarray,
+                                   num_classes:  int,
+                                   verbose:      bool = True) -> dict:
+    """
+    Строит два типа пулов для двух стратегий decoy:
+
+    pool_score[c] = score_c на примерах где argmax=c И label≠c
+                    (для стратегий 'score_coord' и 'pool_replace')
+
+    pool_vectors[c] = полные score-векторы примеров где label≠c
+                      (для стратегии 'full_vector')
+
+    Если ошибок < MIN_POOL — fallback на label≠c (только для pool_score).
+
+    Логика Mix-Max (π_mm = 0):
+      f(t) = model_scores[i, ĉ_i]   — target score
+      Z(t) ~ pool_score[ĉ_i]        — decoy score
+      Под H₀ (ошибка): f(t) и Z(t) должны быть exchangeable.
+    """
+    pred_classes = train_scores.argmax(axis=1)
+    pool_score   = {}
+    pool_vectors = {}
+
+    if verbose:
+        acc = (pred_classes == train_labels).mean()
+        print(f"\nBuilding error-conditioned decoy pools  "
+              f"(train acc={acc:.4f})")
+
+    for c in range(num_classes):
+        # ── pool_score: coord c при ошибке ───────────────────────────────
+        error_mask = (pred_classes == c) & (train_labels != c)
+        n_err      = error_mask.sum()
+
+        if n_err >= MIN_POOL:
+            pool_score[c] = train_scores[error_mask, c]
+            src = f"per-class errors (argmax=c & label≠c)"
+        else:
+            neg_mask      = train_labels != c
+            pool_score[c] = train_scores[neg_mask, c]
+            src = f"fallback (label≠c)"
+
+        # ── pool_vectors: полные векторы при label≠c ─────────────────────
+        neg_mask         = train_labels != c
+        pool_vectors[c]  = train_scores[neg_mask]   # shape [M, C]
+
+        if verbose:
+            p = pool_score[c]
+            print(f"  class {c}: n_score={len(p):6d}  "
+                  f"n_vec={pool_vectors[c].shape[0]:6d}  "
+                  f"[{p.min():.3f}, {p.max():.3f}]  "
+                  f"mean={p.mean():.3f}  n_errors={n_err:4d}  src={src}")
+
+    return pool_score, pool_vectors
+
+def _build_decoy_score_coord(sc_np: np.ndarray,
+                              pool_score: dict,
+                              rng: np.random.Generator) -> np.ndarray:
+    """
+    Стратегия A: заменяем только координату pred_class.
+    decoy[i, ĉ_i] ~ pool_score[ĉ_i]
+    decoy[i, j]   = score[i, j]  для j ≠ ĉ_i
+    """
+    pred_classes = sc_np.argmax(axis=1)
+    dc_np        = sc_np.copy()
+    for c in range(sc_np.shape[1]):
+        mask = pred_classes == c
+        if not mask.any():
+            continue
+        pool = pool_score[c]
+        if len(pool) == 0:
+            continue
+        dc_np[mask, c] = rng.choice(pool, size=mask.sum(), replace=True)
+    return dc_np
+
+# ============================================================
+# BCSS: BUILD ERROR-CONDITIONED POOLS
+# ============================================================
+
+def build_error_conditioned_pools_bcss(
+    data:        dict,
+    verbose:     bool = True
+) -> tuple:
+    """
+    Аналог build_error_conditioned_pools для BCSS.
+
+    data['total_preds'][c]    — тензор [C, N_c]: логиты для примеров класса c
+    data['total_features'][c] — тензор [D, N_c]: признаки для примеров класса c
+
+    pool_score[c]   = score_c на примерах где argmax=c И label≠c
+                      (fallback: label≠c если ошибок < MIN_POOL)
+    pool_vectors[c] = полные score-векторы примеров где label≠c  [M, C]
+    """
+    total_preds = data['total_preds']
+    classes     = sorted(total_preds.keys())
+    num_classes = len(classes)
+
+    # Собираем все скоры и метки в единые массивы
+    # preds[c] shape: [C, N_c] → нам нужно [N_c, C]
+    all_scores_list  = []
+    all_labels_list  = []
+
+    for c in classes:
+        preds_c = total_preds[c].T.cpu().numpy()   # [N_c, C]
+        N_c     = preds_c.shape[0]
+        labels_c = np.full(N_c, c, dtype=np.int64)
+        all_scores_list.append(preds_c)
+        all_labels_list.append(labels_c)
+
+    train_scores = np.concatenate(all_scores_list, axis=0)  # [N, C]
+    train_labels = np.concatenate(all_labels_list, axis=0)  # [N]
+
+    if verbose:
+        pred_classes = train_scores.argmax(axis=1)
+        acc = (pred_classes == train_labels).mean()
+        print(f"\nBuilding error-conditioned decoy pools  "
+              f"(train acc={acc:.4f})")
+
+    pool_score, pool_vectors = build_error_conditioned_pools(
+        train_scores, train_labels, num_classes, verbose=verbose
+    )
+
+    return pool_score, pool_vectors, train_scores, train_labels
+
+
+# ============================================================
+# BCSS: CREATE SCORE FEATURE DATASET
+# ============================================================
+
+def create_score_feature_dataset_bcss_v2(
+    data:         dict,
+    pool_score:   dict,
+    pool_vectors: dict,
+    strategy:     str  = 'score_coord',
+    device:       str  = 'cpu'
+) -> ScoreFeatureDataset:
+    """
+    Аналог create_score_dataset_with_decoys для BCSS.
+
+    Данные уже предвычислены — не нужно гнать батчи через модель.
+
+    strategy:
+      'score_coord'  — заменяем только coord pred_class (Strategy A)
+      'full_vector'  — заменяем весь вектор (Strategy B)
+      'pool_replace' — как score_coord (Strategy C)
+    """
+    assert strategy in ('score_coord', 'full_vector', 'pool_replace'), \
+        f"Unknown strategy: {strategy}"
+
+    total_preds    = data['total_preds']
+    total_features = data['total_features']
+    classes        = sorted(total_preds.keys())
+
+    sc_list, ft_list, dc_list, lb_list = [], [], [], []
+    rng = np.random.default_rng(0)
+
+    for c in classes:
+        preds_c = total_preds[c].T.cpu()       # [N_c, C]
+        feats_c = total_features[c].T.cpu()    # [N_c, D]
+        N_c     = preds_c.shape[0]
+
+        labels_c = torch.full((N_c,), c, dtype=torch.long)
+        sc_np    = preds_c.numpy()
+
+        # ── строим decoy вектор ──────────────────────────────────────────
+        if strategy == 'score_coord':
+            dc_np = _build_decoy_score_coord(sc_np, pool_score, rng)
+
+        dc = torch.from_numpy(dc_np).float()
+
+        sc_list.append(preds_c)
+        ft_list.append(feats_c)
+        dc_list.append(dc)
+        lb_list.append(labels_c)
+
+    return ScoreFeatureDataset(
+        torch.cat(sc_list,  dim=0),
+        torch.cat(ft_list,  dim=0),
+        torch.cat(dc_list,  dim=0),
+        torch.cat(lb_list,  dim=0),
+    )
+
+
+# ============================================================
+# BCSS: NO DECOYS (для инференса)
+# ============================================================
+
+def create_score_feature_dataset_bcss_no_decoys(
+    data:   dict,
+    device: str = 'cpu'
+) -> ScoreFeatureDataset:
+    """
+    Без замены decoys (placeholder = scores).
+    Используется при инференсе Flow.
+    """
+    total_preds    = data['total_preds']
+    total_features = data['total_features']
+    classes        = sorted(total_preds.keys())
+
+    sc_list, ft_list, lb_list = [], [], []
+
+    for c in classes:
+        preds_c  = total_preds[c].T.cpu()     # [N_c, C]
+        feats_c  = total_features[c].T.cpu()  # [N_c, D]
+        N_c      = preds_c.shape[0]
+        labels_c = torch.full((N_c,), c, dtype=torch.long)
+
+        sc_list.append(preds_c)
+        ft_list.append(feats_c)
+        lb_list.append(labels_c)
+
+    all_scores = torch.cat(sc_list, dim=0)
+    all_feats  = torch.cat(ft_list, dim=0)
+    all_labels = torch.cat(lb_list, dim=0)
+
+    return ScoreFeatureDataset(
+        all_scores,
+        all_feats,
+        all_scores.clone(),   # placeholder
+        all_labels,
     )
