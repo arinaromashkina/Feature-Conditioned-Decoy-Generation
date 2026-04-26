@@ -604,15 +604,42 @@ print(f"✓ Source: {len(source_labels)} samples, temp={temp:.4f}")
 # ОБРАБОТКА ТЕСТОВЫХ ФАЙЛОВ
 # ============================================================================
 
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import seaborn as sns
+import torch
+import os
+
+# ── Global settings ──────────────────────────────────────────────────────────
+print(np.__version__)
+np.set_printoptions(threshold=np.inf)
+
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.titlesize': 16,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 10,
+    'figure.titlesize': 18
+})
+
+for d in ['BCSS/figures/distributions', 'BCSS/figures/diagnostics',
+          'BCSS/figures/accuracy', 'BCSS/figures/comparison']:
+    os.makedirs(d, exist_ok=True)
+
+# ── Единые цвета для всех графиков ───────────────────────────────────────────
+COLOR_ENGPE    = '#FF9800'   # синий      — ENGPE
+COLOR_ENGPE_TA = '#FF6D00'   # оранжевый  — ENGPE-TA
+
 print("\n" + "="*70)
 print("PROCESSING TEST FILES")
 print("="*70)
 
 test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))
 print(f"Найдено {len(test_files)} тестовых файлов")
-
-results     = []
-all_fdr_dfs = {}   # tile_name → df_mm (для графиков accuracy)
 
 all_results = []
 
@@ -622,21 +649,20 @@ for fpath in tqdm(test_files, desc="Test files"):
     print(f"  TILE: {tile_name}")
     print(f"{'─'*60}")
 
-    # ── Загрузка тайла ───────────────────────────────────────────────────
+    # ── Загрузка тайла ────────────────────────────────────────────────────
     try:
         test_ds = load_bcss_test_file(fpath)
     except Exception as e:
         print(f"  ✗ {tile_name}: {e}")
         continue
 
-    # ── Генерация decoys ─────────────────────────────────────────────────
+    # ── Генерация decoys ──────────────────────────────────────────────────
     ms, ds_flow, ls = flow.generate_decoys(test_ds, device=DEVICE)
 
-    # Subsample
-    ms       = ms[::SUBSAMPLE_STEP]
-    ds_flow  = ds_flow[::SUBSAMPLE_STEP]
-    ls       = ls[::SUBSAMPLE_STEP]
-    n        = len(ls)
+    ms      = ms[::SUBSAMPLE_STEP]
+    ds_flow = ds_flow[::SUBSAMPLE_STEP]
+    ls      = ls[::SUBSAMPLE_STEP]
+    n       = len(ls)
 
     if n < MIN_PIXELS:
         print(f"  ✗ Too few pixels: {n}")
@@ -660,7 +686,7 @@ for fpath in tqdm(test_files, desc="Test files"):
             print(f"  {method_name}: FAILED ({e})")
             estimate = np.nan
         estimate = np.clip(estimate, 0.0, 1.0)
-        error = abs(estimate - true_acc_full)
+        error    = abs(estimate - true_acc_full)
         baseline_estimates[method_name] = estimate
         baseline_errors[method_name]    = error
         print(f"  {method_name}: {estimate:.3f} (error: {error:.3f})")
@@ -668,17 +694,19 @@ for fpath in tqdm(test_files, desc="Test files"):
     print(f"{'─'*60}")
 
     # ── Подготовка данных ─────────────────────────────────────────────────
-    true_labels   = ls
-    n_samples     = len(true_labels)
+    true_labels  = ls
+    n_samples    = len(true_labels)
 
-    pred_scores   = np.max(ms, axis=1)
-    pred_label    = np.argmax(ms, axis=1)
-    decoy_scores  = np.max(ds_flow, axis=1)
+    pred_scores  = np.max(ms, axis=1)
+    pred_label   = np.argmax(ms, axis=1)
+    decoy_scores = np.max(ds_flow, axis=1)
 
-    correct_pred  = (true_labels == pred_label).astype(int)
+    correct_pred = (true_labels == pred_label).astype(int)
 
     print(f"  accuracy : {correct_pred.sum() / n_samples:.4f}")
     print(f"  error/pi0: {1 - correct_pred.sum() / n_samples:.4f}")
+
+    safe_name = 'norm_flow_' + tile_name.replace('.tensor', '')
 
     # ── Figure 1: Score distributions ─────────────────────────────────────
     bin_width  = 0.05
@@ -689,51 +717,48 @@ for fpath in tqdm(test_files, desc="Test files"):
 
     fig, ax = plt.subplots(figsize=(6, 4))
     sns.histplot(pred_scores,
-                 bins=bins, stat=stat, color='blue',   kde=True,
+                 bins=bins, stat=stat, color='blue', kde=True,
                  fill=True, alpha=plot_alpha, label='model_mixture', ax=ax)
     sns.histplot(decoy_scores,
                  bins=bins, stat=stat, color='orange', kde=True,
                  fill=True, alpha=plot_alpha, label='null', ax=ax)
     sns.histplot(pred_scores[true_labels != pred_label],
-                 bins=bins, stat=stat, color='red',    kde=True,
+                 bins=bins, stat=stat, color='red', kde=True,
                  fill=True, alpha=plot_alpha, label='incorrect', ax=ax)
     ax.set_title(f'{tile_name[:30]} — Score Distributions')
     ax.legend()
     plt.tight_layout()
-    safe_name = 'norm_flow_' + tile_name.replace('.tensor', '')
-    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_scores.png', dpi=150)
+    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_scores.png', dpi=300)
     plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_scores.pdf')
-    plt.show(); plt.close()
+    plt.show()
+    plt.close()
 
-    # ── True FDR (ground truth) ───────────────────────────────────────────
+    # ── True FDR ──────────────────────────────────────────────────────────
     sort_idx           = np.argsort(pred_scores)
     pred_scores_sorted = pred_scores[sort_idx]
     label_sorted       = true_labels[sort_idx]
     pred_label_sorted  = pred_label[sort_idx]
     correct_pred_s     = (label_sorted == pred_label_sorted).astype(int)
 
-    FD       = 1 - correct_pred_s
-    FD_CF    = np.cumsum(FD[::-1])[::-1]
-    D_CF     = np.arange(0, n_samples)[::-1] + 1
-    FDR_true = FD_CF / D_CF
-    FDR_true = np.clip(FDR_true, 0, 1)
-    QVAL_true = np.minimum.accumulate(FDR_true)
-    QVAL_true = np.clip(QVAL_true, 0, 1)
+    FD        = 1 - correct_pred_s
+    FD_CF     = np.cumsum(FD[::-1])[::-1]
+    D_CF      = np.arange(0, n_samples)[::-1] + 1
+    FDR_true  = np.clip(FD_CF / D_CF, 0, 1)
+    QVAL_true = np.clip(np.minimum.accumulate(FDR_true), 0, 1)
 
     # ── Mix-Max FDR ───────────────────────────────────────────────────────
     pi0 = 0.0
 
-    sorted_decoys            = np.sort(decoy_scores)
-    unique_z_vals, counts_z  = np.unique(decoy_scores, return_counts=True)
-    n_unique_z               = len(unique_z_vals)
+    sorted_decoys           = np.sort(decoy_scores)
+    unique_z_vals, counts_z = np.unique(decoy_scores, return_counts=True)
+    n_unique_z              = len(unique_z_vals)
 
     counts_w_leq_z = np.searchsorted(pred_scores_sorted, unique_z_vals, side='left')
     counts_z_leq_z = np.searchsorted(sorted_decoys,      unique_z_vals, side='left')
 
-    P_W_leq_z = (counts_w_leq_z - pi0 * counts_z_leq_z) / ((1 - pi0) * n_samples)
-    P_W_leq_z = np.clip(P_W_leq_z, 0, 1)
-    P_Y_leq_z = counts_z_leq_z / n_samples
-    P_Y_leq_z = np.clip(P_Y_leq_z, 0, 1)
+    P_W_leq_z = np.clip(
+        (counts_w_leq_z - pi0 * counts_z_leq_z) / ((1 - pi0) * n_samples), 0, 1)
+    P_Y_leq_z = np.clip(counts_z_leq_z / n_samples, 0, 1)
 
     R_j = np.divide(P_W_leq_z, P_Y_leq_z,
                     out=np.zeros_like(P_W_leq_z),
@@ -747,15 +772,11 @@ for fpath in tqdm(test_files, desc="Test files"):
         D     = i + 1
         F_0   = pi0 * np.sum(decoy_scores > T)
         z_idx = np.searchsorted(unique_z_vals, T, side='left')
-        if z_idx >= n_unique_z:
-            F_1 = 0.0
-        else:
-            F_1 = (1 - pi0) * np.sum(R_j[z_idx:] * counts_z[z_idx:])
+        F_1   = (0.0 if z_idx >= n_unique_z
+                 else (1 - pi0) * np.sum(R_j[z_idx:] * counts_z[z_idx:]))
         fdr_values[i] = (F_0 + F_1) / D if D > 0 else 0
 
-    fdr_values  = np.clip(fdr_values, 0, 1)
-    QVAL_mixmax = np.minimum.accumulate(fdr_values[::-1])
-    QVAL_mixmax = np.clip(QVAL_mixmax, 0, 1)
+    QVAL_mixmax = np.clip(np.minimum.accumulate(fdr_values[::-1]), 0, 1)
 
     # ── Figure 2: FDR vs score threshold ──────────────────────────────────
     fig, ax = plt.subplots(figsize=(6, 4))
@@ -764,11 +785,13 @@ for fpath in tqdm(test_files, desc="Test files"):
     ax.set_xlabel('Score threshold')
     ax.set_ylabel('q-value (FDR)')
     ax.set_title(f'{tile_name[:30]} — FDR vs Score Threshold')
-    ax.legend(); ax.grid()
+    ax.legend()
+    ax.grid()
     plt.tight_layout()
-    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_fdr_vs_score.png', dpi=150)
+    plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_fdr_vs_score.png', dpi=300)
     plt.savefig(f'BCSS/figures/diagnostics/{safe_name}_fdr_vs_score.pdf')
-    plt.show(); plt.close()
+    plt.show()
+    plt.close()
 
     # ── TDC FDR ───────────────────────────────────────────────────────────
     TDC       = (pred_scores > decoy_scores).astype(int)
@@ -779,15 +802,12 @@ for fpath in tqdm(test_files, desc="Test files"):
     TDC_label_s  = TDC[tdc_sort_idx]
 
     FD_CF_tdc = np.cumsum((1 - TDC_label_s)[::-1])[::-1]
-    D_CF_tdc  = np.arange(0, n_samples)[::-1] + 1 - FD_CF_tdc
-    D_CF_tdc  = np.maximum(D_CF_tdc, 1)
-    TDC_FDR   = FD_CF_tdc / D_CF_tdc
-    TDC_FDR   = np.clip(TDC_FDR, 0, 1)
-    QVAL_TDC  = np.minimum.accumulate(TDC_FDR)
-    QVAL_TDC  = np.clip(QVAL_TDC, 0, 1)
+    D_CF_tdc  = np.maximum(np.arange(0, n_samples)[::-1] + 1 - FD_CF_tdc, 1)
+    TDC_FDR   = np.clip(FD_CF_tdc / D_CF_tdc, 0, 1)
+    QVAL_TDC  = np.clip(np.minimum.accumulate(TDC_FDR), 0, 1)
 
     # ── Acc estimation ─────────────────────────────────────────────────────
-    pi0_tdc = np.clip(float(QVAL_TDC[0]),   0.0, 1.0)
+    pi0_tdc = np.clip(float(QVAL_TDC[0]),    0.0, 1.0)
     pi0_mm  = np.clip(float(QVAL_mixmax[0]), 0.0, 1.0)
 
     Acc_est    = np.zeros(n_samples)
@@ -825,11 +845,13 @@ for fpath in tqdm(test_files, desc="Test files"):
     ax.set_xlabel('Normalized rank (fraction accepted)')
     ax.set_ylabel('Value')
     ax.set_title(f'{tile_name[:30]}')
-    ax.legend(); ax.grid()
+    ax.legend()
+    ax.grid()
     plt.tight_layout()
-    plt.savefig(f'BCSS/figures/accuracy/{safe_name}_acc_fdr.png', dpi=150)
+    plt.savefig(f'BCSS/figures/accuracy/{safe_name}_acc_fdr.png', dpi=300)
     plt.savefig(f'BCSS/figures/accuracy/{safe_name}_acc_fdr.pdf')
-    plt.show(); plt.close()
+    plt.show()
+    plt.close()
 
     # ── ACC_ST / ACC_TA metrics ────────────────────────────────────────────
     acc_st_true    = Acc_true[0]
@@ -846,10 +868,10 @@ for fpath in tqdm(test_files, desc="Test files"):
     err_st_mm  = abs(acc_st_est_mm  - acc_st_true)
     err_ta_mm  = abs(acc_ta_est_mm  - acc_ta_true)
 
-    baseline_errors_ta = {}
-    for method_name in BASELINE_METHODS:
-        baseline_errors_ta[method_name] = abs(
-            baseline_estimates[method_name] - acc_ta_true)
+    baseline_errors_ta = {
+        method_name: abs(baseline_estimates[method_name] - acc_ta_true)
+        for method_name in BASELINE_METHODS
+    }
 
     print(f"\n  {'':28} {'ACC_ST':>10}  {'ACC_TA':>10}")
     print(f"  {'─'*52}")
@@ -861,7 +883,7 @@ for fpath in tqdm(test_files, desc="Test files"):
           f"{acc_st_est_mm:>6.4f}  {err_st_mm:>+.4f}  "
           f"{acc_ta_est_mm:>6.4f}  {err_ta_mm:>+.4f}")
 
-    # ── Собираем результаты ────────────────────────────────────────────────
+    # ── Collect results ────────────────────────────────────────────────────
     row = dict(
         tile           = tile_name,
         n_pixels       = n_samples,
@@ -885,224 +907,241 @@ for fpath in tqdm(test_files, desc="Test files"):
     all_results.append(row)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # AGGREGATE SUMMARY
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 if all_results:
     df = pd.DataFrame(all_results)
-    df.to_csv('BCSS/figures/comparison/norm_flow_results.csv', index=False)
+
+    # ── Save raw results to CSV ───────────────────────────────────────────
+    df.to_csv('BCSS/figures/comparison/norm_flow_results.csv',
+              index=False, float_format='%.6f')
     print(f"\n✓ results.csv сохранён  ({len(df)} тайлов)")
 
+    # ── Build summary table (mean ± std) ──────────────────────────────────
+    summary_rows = []
+
+    acc_report = [
+        ('acc_st_true', 'True ACC_ST',        'True',     'ST'),
+        ('acc_ta_true', 'True ACC_TA',         'True',     'TA'),
+        ('acc_st_tdc',  'ENGPE est ACC_ST',    'ENGPE',    'ST'),
+        ('acc_ta_tdc',  'ENGPE est ACC_TA',    'ENGPE',    'TA'),
+        ('acc_st_mm',   'ENGPE-TA est ACC_ST', 'ENGPE-TA', 'ST'),
+        ('acc_ta_mm',   'ENGPE-TA est ACC_TA', 'ENGPE-TA', 'TA'),
+    ]
+    for col, name, method, kind in acc_report:
+        v = df[col].values
+        summary_rows.append(dict(metric=name, method=method, type=kind,
+                                 mean=v.mean(), std=v.std()))
+
+    for method_name in BASELINE_METHODS:
+        col = f'est_{method_name}'
+        v   = df[col].values
+        summary_rows.append(dict(metric=f'{method_name} est ACC',
+                                 method=method_name, type='ST',
+                                 mean=v.mean(), std=v.std()))
+
+    err_report = [
+        ('err_st_tdc', 'MAE ENGPE vs ACC_ST',    'ENGPE',    'ST'),
+        ('err_ta_tdc', 'MAE ENGPE vs ACC_TA',    'ENGPE',    'TA'),
+        ('err_st_mm',  'MAE ENGPE-TA vs ACC_ST', 'ENGPE-TA', 'ST'),
+        ('err_ta_mm',  'MAE ENGPE-TA vs ACC_TA', 'ENGPE-TA', 'TA'),
+    ]
+    for col, name, method, kind in err_report:
+        v = df[col].values
+        summary_rows.append(dict(metric=name, method=method, type=kind,
+                                 mean=v.mean(), std=v.std()))
+
+    for method_name in BASELINE_METHODS:
+        for col_key, kind, true_type in [
+            (f'err_{method_name}',    'ST', 'ACC_ST'),
+            (f'err_ta_{method_name}', 'TA', 'ACC_TA'),
+        ]:
+            v = df[col_key].values
+            summary_rows.append(dict(metric=f'MAE {method_name} vs {true_type}',
+                                     method=method_name, type=kind,
+                                     mean=v.mean(), std=v.std()))
+
+    df_summary = pd.DataFrame(summary_rows)
+    df_summary.to_csv('BCSS/figures/comparison/norm_flow_results_summary.csv',
+                      index=False, float_format='%.6f')
+    print("✓ summary CSV сохранён")
+
+    # ── Print summary ──────────────────────────────────────────────────────
     print("\n" + "="*70)
     print("AGGREGATE SUMMARY  (mean ± std across tiles)")
     print("="*70)
-    print(f"\n  {'Metric':<35} {'Mean':>8}   {'Std':>8}   {'Type':>6}")
-    print(f"  {'─'*60}")
-
-    acc_report = [
-        ('acc_st_true', 'True ACC_ST',       ''),
-        ('acc_ta_true', 'True ACC_TA',        ''),
-        ('acc_st_tdc',  'ENPE    est ACC_ST', 'ST'),
-        ('acc_ta_tdc',  'ENPE    est ACC_TA', 'TA'),
-        ('acc_st_mm',   'ENPE-TA est ACC_ST', 'ST'),
-        ('acc_ta_mm',   'ENPE-TA est ACC_TA', 'TA'),
-    ]
-    for col, name, kind in acc_report:
-        v = df[col].values
-        print(f"  {name:<35} {v.mean():>8.4f}   {v.std():>8.4f}   {kind:>6}")
-
-    print(f"  {'─'*60}")
-    for method_name in BASELINE_METHODS:
-        col  = f'est_{method_name}'
-        name = f'{method_name} est ACC_ST'
-        v    = df[col].values
-        print(f"  {name:<35} {v.mean():>8.4f}   {v.std():>8.4f}   {'ST':>6}")
-
-    print(f"\n  {'─'*60}")
-    print(f"  ERRORS")
-    print(f"  {'─'*60}")
-
-    fdr_report = [
-        ('err_st_tdc', '|err| ENPE    vs ACC_ST'),
-        ('err_ta_tdc', '|err| ENPE    vs ACC_TA'),
-        ('err_st_mm',  '|err| ENPE-TA vs ACC_ST'),
-        ('err_ta_mm',  '|err| ENPE-TA vs ACC_TA'),
-    ]
-    for col, name in fdr_report:
-        v = df[col].values
-        print(f"  {name:<35} {v.mean():>8.4f}   {v.std():>8.4f}")
-
-    print(f"  {'─'*60}")
-    for method_name in BASELINE_METHODS:
-        v_st = df[f'err_{method_name}'].values
-        v_ta = df[f'err_ta_{method_name}'].values
-        print(f"  {'|err| ' + method_name + ' vs ACC_ST':<35} "
-              f"{v_st.mean():>8.4f}   {v_st.std():>8.4f}")
-        print(f"  {'|err| ' + method_name + ' vs ACC_TA':<35} "
-              f"{v_ta.mean():>8.4f}   {v_ta.std():>8.4f}")
+    print(f"\n  {'Metric':<38} {'Mean':>8}   {'Std':>8}   {'Type':>6}")
+    print(f"  {'─'*65}")
+    for r in summary_rows:
+        print(f"  {r['metric']:<38} {r['mean']:>8.4f}   {r['std']:>8.4f}   {r['type']:>6}")
 
     print(f"\n  Full results table:")
     print(df.to_string(index=False, float_format='{:.4f}'.format))
 
-    # =========================================================================
-    # FIGURE A: Bar chart — mean absolute error per method
-    # =========================================================================
-    method_names_bar = (
-        ['ENPE (ST)', 'ENPE (TA)', 'ENPE-TA (ST)', 'ENPE-TA (TA)'] +
-        [f'{m} (ST)' for m in BASELINE_METHODS] +
-        [f'{m} (TA)' for m in BASELINE_METHODS]
-    )
-    method_cols_bar = (
-        ['err_st_tdc', 'err_ta_tdc', 'err_st_mm', 'err_ta_mm'] +
-        [f'err_{m}' for m in BASELINE_METHODS] +
-        [f'err_ta_{m}' for m in BASELINE_METHODS]
-    )
-    means_bar = [df[c].mean() for c in method_cols_bar]
-    stds_bar  = [df[c].std()  for c in method_cols_bar]
-    colors_bar = (
-        ['#2196F3', '#1565C0', '#FF9800', '#E65100'] +
-        ['#4CAF50'] * len(BASELINE_METHODS) +
-        ['#388E3C'] * len(BASELINE_METHODS)
-    )
-
-    fig, ax = plt.subplots(figsize=(max(8, len(method_names_bar) * 0.9), 5))
-    x_pos = np.arange(len(method_names_bar))
-    ax.bar(x_pos, means_bar, yerr=stds_bar,
-           color=colors_bar, capsize=4, alpha=0.85,
-           edgecolor='black', linewidth=1,
-           error_kw=dict(elinewidth=1.2, ecolor='black'))
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(method_names_bar, rotation=35, ha='right')
-    ax.set_ylabel('Mean Absolute Error')
-    ax.set_xlabel('Method')
-    ax.grid(axis='y', linestyle='--', alpha=0.5)
-    ax.set_ylim(bottom=0)
-
-    from matplotlib.patches import Patch
-    legend_elements = [
-        Patch(facecolor='#2196F3', alpha=0.85, label='ENPE (ST)'),
-        Patch(facecolor='#1565C0', alpha=0.85, label='ENPE (TA)'),
-        Patch(facecolor='#FF9800', alpha=0.85, label='ENPE-TA (ST)'),
-        Patch(facecolor='#E65100', alpha=0.85, label='ENPE-TA (TA)'),
-        Patch(facecolor='#4CAF50', alpha=0.85, label='Baseline (ST)'),
-        Patch(facecolor='#388E3C', alpha=0.85, label='Baseline (TA)'),
-    ]
-    ax.legend(handles=legend_elements, fontsize=10)
-    plt.tight_layout()
-    plt.savefig('BCSS/figures/comparison/norm_summary_bar_mean_error.png', dpi=150)
-    plt.savefig('BCSS/figures/comparison/norm_summary_bar_mean_error.pdf')
-    plt.show(); plt.close()
-    print("✓ summary_bar_mean_error")
-
-    # =========================================================================
-    # FIGURE B: Scatter — estimated vs true accuracy
-    # =========================================================================
-    scatter_methods = []
-
-    scatter_methods.append(dict(
-        label='ENPE',      col_est='acc_st_tdc', col_true='acc_st_true',
-        panel=0, marker='o', color='#2196F3', zorder=4))
-    scatter_methods.append(dict(
-        label='ENPE-TA',   col_est='acc_st_mm',  col_true='acc_st_true',
-        panel=0, marker='s', color='#FF9800', zorder=4))
-    scatter_methods.append(dict(
-        label='ENPE',      col_est='acc_ta_tdc', col_true='acc_ta_true',
-        panel=1, marker='o', color='#2196F3', zorder=4))
-    scatter_methods.append(dict(
-        label='ENPE-TA',   col_est='acc_ta_mm',  col_true='acc_ta_true',
-        panel=1, marker='s', color='#FF9800', zorder=4))
-
-    baseline_colors  = plt.cm.tab10(np.linspace(0, 0.9, len(BASELINE_METHODS)))
-    baseline_markers = ['D', '^', 'v', 'P', 'X', '*', 'h', '8']
-    for idx, method_name in enumerate(BASELINE_METHODS):
-        c = baseline_colors[idx]
-        m = baseline_markers[idx % len(baseline_markers)]
-        scatter_methods.append(dict(
-            label=method_name, col_est=f'est_{method_name}',
-            col_true='acc_st_true', panel=0,
-            marker=m, color=c, zorder=3))
-        scatter_methods.append(dict(
-            label=method_name, col_est=f'est_{method_name}',
-            col_true='acc_ta_true', panel=1,
-            marker=m, color=c, zorder=3))
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    panel_titles = ['ACC$_{ST}$', 'ACC$_{TA}$']
-
-    for panel_idx, ax in enumerate(axes):
-        methods_in_panel = [sm for sm in scatter_methods
-                            if sm['panel'] == panel_idx]
-        all_vals = []
-        for sm in methods_in_panel:
-            all_vals.extend(df[sm['col_true']].values.tolist())
-            all_vals.extend(df[sm['col_est']].values.tolist())
-
-        lo = min(all_vals) - 0.02
-        hi = max(all_vals) + 0.02
-        ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5,
-                label='x=y', zorder=2)
-
-        plotted_labels = set()
-        for sm in methods_in_panel:
-            lbl = (sm['label'] if sm['label'] not in plotted_labels
-                   else '_nolegend_')
-            ax.scatter(
-                df[sm['col_true']].values,
-                df[sm['col_est']].values,
-                label=lbl,
-                marker=sm['marker'],
-                color=sm['color'],
-                s=60, alpha=0.85,
-                zorder=sm['zorder']
-            )
-            plotted_labels.add(sm['label'])
-
-        ax.set_xlabel('True Accuracy')
-        ax.set_ylabel('Estimated Accuracy')
-        ax.set_title(panel_titles[panel_idx])
-        ax.legend(fontsize=9, loc='upper left')
-        ax.grid(linestyle='--', alpha=0.4)
-        ax.set_aspect('equal', 'box')
-
-    plt.tight_layout()
-    plt.savefig('BCSS/figures/comparison/norm_scatter_estimated_vs_true_acc.png',
-                dpi=150)
-    plt.savefig('BCSS/figures/comparison/norm_scatter_estimated_vs_true_acc.pdf')
-    plt.show(); plt.close()
-    print("✓ scatter_estimated_vs_true_acc")
-
-    # =========================================================================
-    # FIGURE C: True ACC_ST vs True ACC_TA
-    # =========================================================================
-    fig, ax = plt.subplots(figsize=(6, 5))
+    # ─────────────────────────────────────────────────────────────────────
+    # FIGURE 1 (summary): True ACC_TA vs True ACC_ST
+    # ─────────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(6, 4))
 
     lo = min(df['acc_st_true'].min(), df['acc_ta_true'].min()) - 0.02
     hi = max(df['acc_st_true'].max(), df['acc_ta_true'].max()) + 0.02
 
-    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y')
+    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y', zorder=2)
     ax.scatter(
         df['acc_st_true'].values,
         df['acc_ta_true'].values,
-        color='steelblue', s=70, alpha=0.85, zorder=3
+        color='steelblue', s=60, alpha=0.85, zorder=3
     )
     ax.set_xlabel('True ACC ST')
     ax.set_ylabel('True ACC TA')
-    ax.set_title('True ACC_ST vs ACC_TA (per tile)')
     ax.legend(fontsize=10)
     ax.grid(linestyle='--', alpha=0.4)
     ax.set_aspect('equal', 'box')
     plt.tight_layout()
     plt.savefig('BCSS/figures/comparison/norm_scatter_true_accst_vs_accta.png',
-                dpi=150)
+                dpi=300)
     plt.savefig('BCSS/figures/comparison/norm_scatter_true_accst_vs_accta.pdf')
-    plt.show(); plt.close()
+    plt.show()
+    plt.close()
     print("✓ scatter_true_accst_vs_accta")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # FIGURE 2 (summary): Estimated Accuracy vs True Accuracy
+    # All competitors + ENGPE (true=ACC_ST) + ENGPE-TA (true=ACC_TA)
+    # ─────────────────────────────────────────────────────────────────────
+    baseline_list    = list(BASELINE_METHODS.keys())
+    n_base           = len(baseline_list)
+    baseline_palette = plt.cm.tab10(np.linspace(0, 0.9, n_base))
+    baseline_markers = ['D', '^', 'v', 'P', 'X', '*', 'h', '8']
+
+    # Collect all values to determine axis range
+    all_scatter_vals = []
+    all_scatter_vals.extend(df['acc_st_true'].values.tolist())
+    all_scatter_vals.extend(df['acc_ta_true'].values.tolist())
+    all_scatter_vals.extend(df['acc_st_tdc'].values.tolist())
+    all_scatter_vals.extend(df['acc_ta_mm'].values.tolist())
+    for method_name in baseline_list:
+        all_scatter_vals.extend(df[f'est_{method_name}'].values.tolist())
+
+    lo2 = min(all_scatter_vals) - 0.02
+    hi2 = max(all_scatter_vals) + 0.02
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    # Diagonal reference
+    ax.plot([lo2, hi2], [lo2, hi2], 'r--', linewidth=1.5,
+            label='x=y', zorder=2)
+
+    # ── Baselines ──────────────────────────────────────────────────────────
+    for idx, method_name in enumerate(baseline_list):
+        ax.scatter(
+            df['acc_st_true'].values,
+            df[f'est_{method_name}'].values,
+            label  = method_name,
+            marker = baseline_markers[idx % len(baseline_markers)],
+            color  = baseline_palette[idx],
+            s      = 55,
+            alpha  = 0.70,
+            zorder = 3
+        )
+
+    # ── ENGPE: true accuracy = ACC_ST ─────────────────────────────────────
+    ax.scatter(
+        df['acc_st_true'].values,
+        df['acc_st_tdc'].values,
+        label  = 'ENGPE',
+        marker = 'o',
+        color  = COLOR_ENGPE,       # '#2196F3'
+        s      = 70,
+        alpha  = 0.80,
+        zorder = 4
+    )
+
+    # ── ENGPE-TA: true accuracy = ACC_TA (brighter / larger) ──────────────
+    ax.scatter(
+        df['acc_ta_true'].values,
+        df['acc_ta_mm'].values,
+        label  = 'ENGPE-TA',
+        marker = 's',
+        color  = COLOR_ENGPE_TA,    # '#FF6D00'
+        s      = 90,
+        alpha  = 0.95,
+        zorder = 5
+    )
+
+    ax.set_xlabel('True Accuracy')
+    ax.set_ylabel('Estimated Accuracy')
+    ax.set_xlim(lo2, hi2)
+    ax.set_ylim(lo2, hi2)
+    ax.set_aspect('equal', 'box')
+    ax.legend(fontsize=9, loc='upper left', framealpha=0.9)
+    ax.grid(linestyle='--', alpha=0.4)
+    plt.tight_layout()
+    plt.savefig('BCSS/figures/comparison/norm_scatter_estimated_vs_true_all.png',
+                dpi=300)
+    plt.savefig('BCSS/figures/comparison/norm_scatter_estimated_vs_true_all.pdf')
+    plt.show()
+    plt.close()
+    print("✓ scatter_estimated_vs_true_all")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # FIGURE 3 (summary): Bar chart — MAE per method (mean ± std)
+    # ─────────────────────────────────────────────────────────────────────
+    bar_entries = []
+
+    # Our methods — используем те же COLOR_ENGPE / COLOR_ENGPE_TA
+    bar_entries.append(('ENGPE\n(ST)',     'err_st_tdc', COLOR_ENGPE))
+    bar_entries.append(('ENGPE\n(TA)',     'err_ta_tdc', COLOR_ENGPE))
+    bar_entries.append(('ENGPE-TA\n(ST)', 'err_st_mm',  COLOR_ENGPE_TA))
+    bar_entries.append(('ENGPE-TA\n(TA)', 'err_ta_mm',  COLOR_ENGPE_TA))
+
+    # Baselines (vs ACC_ST)
+    for idx, method_name in enumerate(baseline_list):
+        bar_entries.append((
+            f'{method_name}\n(ST)',
+            f'err_{method_name}',
+            baseline_palette[idx]
+        ))
+
+    labels_bar = [e[0] for e in bar_entries]
+    means_bar  = [df[e[1]].mean() for e in bar_entries]
+    stds_bar   = [df[e[1]].std()  for e in bar_entries]
+    colors_bar = [e[2]            for e in bar_entries]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(bar_entries) * 1.0), 4))
+    x_pos = np.arange(len(bar_entries))
+
+    ax.bar(x_pos, means_bar, yerr=stds_bar,
+           color=colors_bar, capsize=4, alpha=0.85,
+           error_kw=dict(elinewidth=1.2, ecolor='black'))
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(labels_bar, rotation=30, ha='right')
+    ax.set_ylabel('Mean Absolute Error')
+    ax.set_xlabel('Method')
+    ax.set_ylim(bottom=0)
+    ax.grid(axis='y', linestyle='--', alpha=0.5)
+
+    legend_elements = [
+        mpatches.Patch(facecolor=COLOR_ENGPE,    alpha=0.85, label='ENGPE'),
+        mpatches.Patch(facecolor=COLOR_ENGPE_TA, alpha=0.85, label='ENGPE-TA'),
+        mpatches.Patch(facecolor='grey',         alpha=0.85, label='Baseline'),
+    ]
+    ax.legend(handles=legend_elements, fontsize=9)
+    plt.tight_layout()
+    plt.savefig('BCSS/figures/comparison/norm_summary_bar_mean_error.png', dpi=300)
+    plt.savefig('BCSS/figures/comparison/norm_summary_bar_mean_error.pdf')
+    plt.show()
+    plt.close()
+    print("✓ bar_mae_per_method")
+
+    print("\nAll figures saved.")
+
 
 # ============================================================================
-# PLOT 5: Score distributions для первого тайла
+# PLOT: Score distributions для первого тайла
 # ============================================================================
-
 print("\n" + "="*70)
 print("SCORE DISTRIBUTIONS (первый тайл)")
 print("="*70)
