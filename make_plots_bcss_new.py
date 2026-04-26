@@ -609,6 +609,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
+from sklearn.metrics import precision_recall_curve
 import torch
 import os
 
@@ -631,8 +632,8 @@ for d in ['BCSS/figures/distributions', 'BCSS/figures/diagnostics',
     os.makedirs(d, exist_ok=True)
 
 # ── Единые цвета для всех графиков ───────────────────────────────────────────
-COLOR_ENGPE    = '#FF9800'   # синий      — ENGPE
-COLOR_ENGPE_TA = '#FF6D00'   # оранжевый  — ENGPE-TA
+COLOR_ENGPE    = '#1976D2'   # blue          — ENGPE
+COLOR_ENGPE_TA = '#FF6D00'   # bright orange — ENGPE-TA
 
 print("\n" + "="*70)
 print("PROCESSING TEST FILES")
@@ -642,6 +643,7 @@ test_files = sorted(glob.glob(os.path.join(TEST_FOLDER, '*.tensor')))
 print(f"Найдено {len(test_files)} тестовых файлов")
 
 all_results = []
+tile_data    = {}
 
 for fpath in tqdm(test_files, desc="Test files"):
     tile_name = os.path.basename(fpath)
@@ -702,6 +704,12 @@ for fpath in tqdm(test_files, desc="Test files"):
     decoy_scores = np.max(ds_flow, axis=1)
 
     correct_pred = (true_labels == pred_label).astype(int)
+
+    probs_np      = F.softmax(torch.tensor(ms).float(), dim=1).numpy()
+    mano_fro      = np.linalg.norm(probs_np, ord='fro') / np.sqrt(n_samples)
+    mano_fro_norm = np.clip(
+        (mano_fro - 1.0 / np.sqrt(NUM_CLASSES)) / (1.0 - 1.0 / np.sqrt(NUM_CLASSES)),
+        0.0, 1.0)
 
     print(f"  accuracy : {correct_pred.sum() / n_samples:.4f}")
     print(f"  error/pi0: {1 - correct_pred.sum() / n_samples:.4f}")
@@ -832,9 +840,29 @@ for fpath in tqdm(test_files, desc="Test files"):
 
     Acc_true = np.clip(Acc_true, 0.0, 1.0)
 
-    # ── Figure 3: Acc & FDR vs normalised rank ────────────────────────────
     normalized_rank = np.arange(n_samples) / n_samples
+    total_TP        = int(correct_pred_s.sum())
+    TP_from_i       = np.cumsum(correct_pred_s[::-1])[::-1]
+    D_from_i        = np.arange(n_samples, 0, -1)
 
+    tile_data[tile_name] = dict(
+        normalized_rank = normalized_rank.copy(),
+        QVAL_TDC        = QVAL_TDC.copy(),
+        QVAL_mixmax     = QVAL_mixmax.copy(),
+        QVAL_true       = QVAL_true.copy(),
+        Acc_true        = Acc_true.copy(),
+        Acc_est         = Acc_est.copy(),
+        Acc_est_MM      = Acc_est_MM.copy(),
+        precision_true  = np.where(D_from_i > 0, TP_from_i / D_from_i, 0.0),
+        recall_true     = TP_from_i / max(total_TP, 1),
+        precision_est   = np.clip(1 - QVAL_mixmax, 0.0, 1.0),
+        recall_est      = np.clip(
+            (1 - QVAL_mixmax) * D_from_i / max(total_TP, 1), 0.0, 1.0),
+        n_samples       = n_samples,
+        tile_name       = tile_name,
+    )
+
+    # ── Figure 3: Acc & FDR vs normalised rank ────────────────────────────
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(normalized_rank, QVAL_TDC,    label='TDC FDR')
     ax.plot(normalized_rank, QVAL_mixmax, label='Mix-Max FDR')
@@ -888,6 +916,7 @@ for fpath in tqdm(test_files, desc="Test files"):
         tile           = tile_name,
         n_pixels       = n_samples,
         true_acc       = true_acc_full,
+        mano_fro_norm  = mano_fro_norm,
         acc_st_true    = acc_st_true,
         acc_ta_true    = acc_ta_true,
         acc_st_tdc     = acc_st_est_tdc,
@@ -917,6 +946,29 @@ if all_results:
     df.to_csv('BCSS/figures/comparison/norm_flow_results.csv',
               index=False, float_format='%.6f')
     print(f"\n✓ results.csv сохранён  ({len(df)} тайлов)")
+
+    # Save subsampled acc/fdr curves for ALL tiles (100 pts each)
+    # for later cross-dataset plots
+    N_CURVE_PTS = 100
+    curve_rows  = []
+    for key, td in tile_data.items():
+        n   = td['n_samples']
+        idx = np.linspace(0, n - 1, N_CURVE_PTS, dtype=int)
+        for i in idx:
+            curve_rows.append(dict(
+                dataset       = 'bcss',
+                tile          = key,
+                frac_accepted = float(td['normalized_rank'][i]),
+                acc_true      = float(td['Acc_true'][i]),
+                acc_est_mm    = float(td['Acc_est_MM'][i]),
+                acc_est_tdc   = float(td['Acc_est'][i]),
+                fdr_mixmax    = float(td['QVAL_mixmax'][i]),
+                fdr_tdc       = float(td['QVAL_TDC'][i]),
+                fdr_true      = float(td['QVAL_true'][i]),
+            ))
+    pd.DataFrame(curve_rows).to_csv(
+        'BCSS/figures/comparison/norm_flow_acc_curves.csv', index=False, float_format='%.6f')
+    print("✓ acc_curves CSV сохранён")
 
     # ── Build summary table (mean ± std) ──────────────────────────────────
     summary_rows = []
@@ -961,6 +1013,16 @@ if all_results:
             summary_rows.append(dict(metric=f'MAE {method_name} vs {true_type}',
                                      method=method_name, type=kind,
                                      mean=v.mean(), std=v.std()))
+
+    # MANO
+    v_mano = df['mano_fro_norm'].values
+    summary_rows.append(dict(metric='MANO est ACC (Frobenius norm)',
+                             method='MANO', type='ST',
+                             mean=v_mano.mean(), std=v_mano.std()))
+    mae_mano = (df['mano_fro_norm'] - df['acc_st_true']).abs().values
+    summary_rows.append(dict(metric='MAE MANO vs ACC_ST',
+                             method='MANO', type='ST',
+                             mean=mae_mano.mean(), std=mae_mano.std()))
 
     df_summary = pd.DataFrame(summary_rows)
     df_summary.to_csv('BCSS/figures/comparison/norm_flow_results_summary.csv',
@@ -1041,7 +1103,7 @@ if all_results:
             label  = method_name,
             marker = baseline_markers[idx % len(baseline_markers)],
             color  = baseline_palette[idx],
-            s      = 55,
+            s      = 25,
             alpha  = 0.70,
             zorder = 3
         )
@@ -1052,8 +1114,8 @@ if all_results:
         df['acc_st_tdc'].values,
         label  = 'ENGPE',
         marker = 'o',
-        color  = COLOR_ENGPE,       # '#2196F3'
-        s      = 70,
+        color  = COLOR_ENGPE,
+        s      = 35,
         alpha  = 0.80,
         zorder = 4
     )
@@ -1064,9 +1126,9 @@ if all_results:
         df['acc_ta_mm'].values,
         label  = 'ENGPE-TA',
         marker = 's',
-        color  = COLOR_ENGPE_TA,    # '#FF6D00'
-        s      = 90,
-        alpha  = 0.95,
+        color  = COLOR_ENGPE_TA,
+        s      = 50,
+        alpha  = 1.0,
         zorder = 5
     )
 
@@ -1135,6 +1197,79 @@ if all_results:
     plt.show()
     plt.close()
     print("✓ bar_mae_per_method")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # FIGURE 4 (summary): MANO Frobenius score vs True Accuracy
+    # ─────────────────────────────────────────────────────────────────────
+    lo_m = min(df['acc_st_true'].min(), df['mano_fro_norm'].min()) - 0.02
+    hi_m = max(df['acc_st_true'].max(), df['mano_fro_norm'].max()) + 0.02
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot([lo_m, hi_m], [lo_m, hi_m], 'r--', linewidth=1.5, label='x=y', zorder=2)
+    ax.scatter(
+        df['acc_st_true'].values,
+        df['mano_fro_norm'].values,
+        label='MANO (Frobenius)', marker='D',
+        color='#5C6BC0', s=25, alpha=0.75, zorder=3
+    )
+    ax.set_xlabel('True Accuracy')
+    ax.set_ylabel('MANO Score (normalized Frobenius)')
+    ax.legend(fontsize=10)
+    ax.grid(linestyle='--', alpha=0.4)
+    ax.set_aspect('equal', 'box')
+    plt.tight_layout()
+    plt.savefig('BCSS/figures/comparison/norm_scatter_mano.png', dpi=300)
+    plt.savefig('BCSS/figures/comparison/norm_scatter_mano.pdf')
+    plt.show()
+    plt.close()
+    print("✓ scatter_mano")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # FIGURE 5: Acc & FDR vs rank for the best tile (min err_ta_mm)
+    # ─────────────────────────────────────────────────────────────────────
+    best_tile = df.loc[df['err_ta_mm'].idxmin(), 'tile']
+    print(f"\nBest tile (min err_ta_mm): {best_tile}")
+
+    if best_tile in tile_data:
+        td = tile_data[best_tile]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(td['normalized_rank'], td['Acc_true'],    label='True Acc',     linewidth=1.5, linestyle='--', color='steelblue')
+        ax.plot(td['normalized_rank'], td['QVAL_true'],   label='True FDR',     linewidth=1.5, linestyle='--', color='#78909C')
+        ax.plot(td['normalized_rank'], td['Acc_est_MM'],  label='ENGPE-TA',     linewidth=1.8, color=COLOR_ENGPE_TA)
+        ax.plot(td['normalized_rank'], td['QVAL_mixmax'], label='ENGPE-TA FDR', linewidth=1.5, color=COLOR_ENGPE_TA, linestyle=':')
+        ax.set_xlabel('Fraction accepted')
+        ax.set_ylabel('Value')
+        ax.legend(fontsize=9, loc='best', framealpha=0.9)
+        ax.grid(linestyle='--', alpha=0.4)
+        ax.set_ylim(0, 1.05)
+        plt.tight_layout()
+        plt.savefig('BCSS/figures/comparison/norm_best_tile_acc_fdr.png', dpi=300)
+        plt.savefig('BCSS/figures/comparison/norm_best_tile_acc_fdr.pdf')
+        plt.show()
+        plt.close()
+        print("✓ best_tile_acc_fdr")
+
+        # ─────────────────────────────────────────────────────────────────
+        # FIGURE 6: Precision-Recall curve — true vs estimated (best tile)
+        # ─────────────────────────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(td['recall_true'], td['precision_true'],
+                color='steelblue', linewidth=1.8, label='True PR')
+        ax.plot(td['recall_est'],  td['precision_est'],
+                color=COLOR_ENGPE_TA, linewidth=1.8, linestyle='--',
+                label='ENGPE-TA PR (estimated)')
+        ax.set_xlabel('Recall')
+        ax.set_ylabel('Precision')
+        ax.legend(fontsize=10)
+        ax.grid(linestyle='--', alpha=0.4)
+        ax.set_xlim(0, 1.02)
+        ax.set_ylim(0, 1.05)
+        plt.tight_layout()
+        plt.savefig('BCSS/figures/comparison/norm_best_tile_pr_curve.png', dpi=300)
+        plt.savefig('BCSS/figures/comparison/norm_best_tile_pr_curve.pdf')
+        plt.show()
+        plt.close()
+        print("✓ best_tile_pr_curve")
 
     print("\nAll figures saved.")
 
