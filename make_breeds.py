@@ -21,6 +21,16 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+matplotlib.rcParams.update({
+    'font.size':        14,
+    'axes.titlesize':   16,
+    'axes.labelsize':   14,
+    'xtick.labelsize':  12,
+    'ytick.labelsize':  12,
+    'legend.fontsize':  10,
+    'figure.titlesize': 18,
+})
+
 from robustness.tools.helpers import get_label_mapping
 from robustness.tools import folder
 from robustness.tools.breeds_helpers import (
@@ -1108,6 +1118,10 @@ os.makedirs('BREEDS/figures/accuracy',    exist_ok=True)
 os.makedirs('BREEDS/figures/comparison',  exist_ok=True)
 
 all_results = []
+tile_data = {}
+
+COLOR_ENGPE    = '#1976D2'
+COLOR_ENGPE_TA = '#FF6D00'
 
 for testset_idx, (testset, testloader) in enumerate(zip(testsets, testloaders)):
 
@@ -1172,6 +1186,12 @@ for testset_idx, (testset, testloader) in enumerate(zip(testsets, testloaders)):
     decoy_scores = np.max(ds_flow, axis=1)
     true_labels  = ls
     n_samples    = len(true_labels)
+
+    probs_np      = F.softmax(torch.tensor(ms).float(), dim=1).numpy()
+    mano_fro      = np.linalg.norm(probs_np, ord='fro') / np.sqrt(n_samples)
+    mano_fro_norm = float(np.clip(
+        (mano_fro - 1.0 / np.sqrt(NUM_CLASSES)) / (1.0 - 1.0 / np.sqrt(NUM_CLASSES)),
+        0.0, 1.0))
 
     correct_pred = (true_labels == pred_label).astype(int)
     print(f"  accuracy : {correct_pred.mean():.4f}")
@@ -1300,6 +1320,29 @@ for testset_idx, (testset, testloader) in enumerate(zip(testsets, testloaders)):
           f"{acc_st_est_mm:>6.4f} {err_st_mm:>+.4f}  "
           f"{acc_ta_est_mm:>6.4f} {err_ta_mm:>+.4f}")
 
+    # ── Store tile data for aggregate plots (all testsets) ────────────────
+    total_TP  = int(correct_pred_s.sum())
+    TP_from_i = np.cumsum(correct_pred_s[::-1])[::-1]
+    D_from_i  = np.arange(n_samples, 0, -1)
+    tile_data[ds_name] = dict(
+        normalized_rank = np.arange(n_samples) / n_samples,
+        QVAL_TDC        = QVAL_TDC.copy(),
+        QVAL_mixmax     = QVAL_mixmax.copy(),
+        QVAL_true       = QVAL_true.copy(),
+        Acc_true        = Acc_true.copy(),
+        Acc_est         = Acc_est.copy(),
+        Acc_est_MM      = Acc_est_MM.copy(),
+        precision_true  = np.where(D_from_i > 0, TP_from_i / D_from_i, 0.0),
+        recall_true     = TP_from_i / max(total_TP, 1),
+        precision_est   = np.clip(1 - QVAL_mixmax, 0.0, 1.0),
+        recall_est      = np.clip(
+            (1 - QVAL_mixmax) * D_from_i / max(total_TP, 1), 0.0, 1.0),
+        n_samples       = n_samples,
+        ds_name         = ds_name,
+        mano_fro_norm   = mano_fro_norm,
+        acc_st_true     = acc_st_true,
+    )
+
     # ── Figures (только для первых 10 наборов) ────────────────────────────
     if testset_idx < 10:
         safe_name       = f'breeds_{BREEDS_NAME}_{ds_name}'
@@ -1391,6 +1434,8 @@ for testset_idx, (testset, testloader) in enumerate(zip(testsets, testloaders)):
         acc_ta_mm      = acc_ta_est_mm,
         err_st_mm      = err_st_mm,
         err_ta_mm      = err_ta_mm,
+        # ── MANO ──────────────────────────────────────────────────────────
+        mano_fro_norm  = mano_fro_norm,
     )
     # baselines
     for m in BASELINE_METHODS:
@@ -1528,16 +1573,20 @@ if all_results:
     scatter_methods = []
     scatter_methods.append(dict(
         label='ENPE',    col_est='acc_st_tdc',
-        col_true='acc_st_true', panel=0, marker='o', color='#2196F3'))
+        col_true='acc_st_true', panel=0, marker='o',
+        color=COLOR_ENGPE, size=35))
     scatter_methods.append(dict(
         label='ENPE-TA', col_est='acc_st_mm',
-        col_true='acc_st_true', panel=0, marker='s', color='#FF9800'))
+        col_true='acc_st_true', panel=0, marker='s',
+        color=COLOR_ENGPE_TA, size=50))
     scatter_methods.append(dict(
         label='ENPE',    col_est='acc_ta_tdc',
-        col_true='acc_ta_true', panel=1, marker='o', color='#2196F3'))
+        col_true='acc_ta_true', panel=1, marker='o',
+        color=COLOR_ENGPE, size=35))
     scatter_methods.append(dict(
         label='ENPE-TA', col_est='acc_ta_mm',
-        col_true='acc_ta_true', panel=1, marker='s', color='#FF9800'))
+        col_true='acc_ta_true', panel=1, marker='s',
+        color=COLOR_ENGPE_TA, size=50))
 
     baseline_colors  = plt.cm.tab10(np.linspace(0, 0.9, len(BASELINE_METHODS)))
     baseline_markers = ['D', '^', 'v', 'P', 'X', '*', 'h', '8']
@@ -1546,10 +1595,10 @@ if all_results:
         mk = baseline_markers[idx % len(baseline_markers)]
         scatter_methods.append(dict(
             label=m, col_est=f'est_{m}',
-            col_true='acc_st_true', panel=0, marker=mk, color=c))
+            col_true='acc_st_true', panel=0, marker=mk, color=c, size=25))
         scatter_methods.append(dict(
             label=m, col_est=f'est_{m}',
-            col_true='acc_ta_true', panel=1, marker=mk, color=c))
+            col_true='acc_ta_true', panel=1, marker=mk, color=c, size=25))
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     for panel_idx, ax in enumerate(axes):
@@ -1570,7 +1619,7 @@ if all_results:
                 df[sm['col_est']].values,
                 label=lbl, marker=sm['marker'],
                 color=sm['color'],
-                s=50, alpha=0.75
+                s=sm.get('size', 25), alpha=0.75
             )
             plotted.add(sm['label'])
 
@@ -1581,10 +1630,6 @@ if all_results:
         ax.grid(linestyle='--', alpha=0.4)
         ax.set_aspect('equal', 'box')
 
-    plt.suptitle(
-        f'BREEDS {BREEDS_NAME} — Estimated vs True Accuracy',
-        fontsize=12
-    )
     plt.tight_layout()
     plt.savefig(
         f'BREEDS/figures/comparison/'
@@ -1595,7 +1640,7 @@ if all_results:
     plt.close()
 
     # ── Figure C: True ACC_ST vs True ACC_TA ──────────────────────────────
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=(6, 4))
     lo = min(df['acc_st_true'].min(), df['acc_ta_true'].min()) - 0.02
     hi = max(df['acc_st_true'].max(), df['acc_ta_true'].max()) + 0.02
     ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y')
@@ -1604,16 +1649,15 @@ if all_results:
     ax.scatter(
         df.loc[src_mask,  'acc_st_true'],
         df.loc[src_mask,  'acc_ta_true'],
-        color='steelblue', s=60, alpha=0.8, label='source', zorder=3
+        color='steelblue', s=40, alpha=0.8, label='source', zorder=3
     )
     ax.scatter(
         df.loc[~src_mask, 'acc_st_true'],
         df.loc[~src_mask, 'acc_ta_true'],
-        color='darkorange', s=60, alpha=0.8, label='target', zorder=3
+        color='darkorange', s=40, alpha=0.8, label='target', zorder=3
     )
-    ax.set_xlabel('True ACC_ST')
-    ax.set_ylabel('True ACC_TA')
-    ax.set_title(f'BREEDS {BREEDS_NAME} — True ACC_ST vs ACC_TA')
+    ax.set_xlabel('True ACC$_{ST}$')
+    ax.set_ylabel('True ACC$_{TA}$')
     ax.legend(); ax.grid(linestyle='--', alpha=0.4)
     ax.set_aspect('equal', 'box')
     plt.tight_layout()
@@ -1664,6 +1708,152 @@ if all_results:
                 f'breeds_{BREEDS_NAME}_acc_vs_severity.pdf')
             plt.close()
             print("✓ acc_vs_severity")
+
+    # ── Summary CSV (mean±std per method) ────────────────────────────────
+    summary_rows = []
+    for col_est, col_true, col_err, method, kind in [
+        ('acc_st_tdc',    'acc_st_true', 'err_st_tdc', 'ENGPE',    'ST'),
+        ('acc_ta_tdc',    'acc_ta_true', 'err_ta_tdc', 'ENGPE',    'TA'),
+        ('acc_st_mm',     'acc_st_true', 'err_st_mm',  'ENGPE-TA', 'ST'),
+        ('acc_ta_mm',     'acc_ta_true', 'err_ta_mm',  'ENGPE-TA', 'TA'),
+    ]:
+        v_est  = df[col_est].dropna().values
+        v_true = df[col_true].dropna().values
+        v_err  = df[col_err].dropna().values
+        summary_rows.append(dict(
+            metric=f'Est ACC ({kind})', method=method, type=kind,
+            mean_est=v_est.mean(),   std_est=v_est.std(),
+            mean_true=v_true.mean(), std_true=v_true.std(),
+            mean_mae=v_err.mean(),   std_mae=v_err.std(),
+        ))
+    for m in BASELINE_METHODS:
+        v_est  = df[f'est_{m}'].dropna().values
+        v_true = df['acc_st_true'].dropna().values
+        v_err  = df[f'err_{m}'].dropna().values
+        summary_rows.append(dict(
+            metric='Est ACC (ST)', method=m, type='ST',
+            mean_est=v_est.mean(),   std_est=v_est.std(),
+            mean_true=v_true.mean(), std_true=v_true.std(),
+            mean_mae=v_err.mean(),   std_mae=v_err.std(),
+        ))
+        v_err_ta = df[f'err_ta_{m}'].dropna().values
+        v_true_ta = df['acc_ta_true'].dropna().values
+        summary_rows.append(dict(
+            metric='Est ACC (TA)', method=m, type='TA',
+            mean_est=v_est.mean(),   std_est=v_est.std(),
+            mean_true=v_true_ta.mean(), std_true=v_true_ta.std(),
+            mean_mae=v_err_ta.mean(), std_mae=v_err_ta.std(),
+        ))
+    if 'mano_fro_norm' in df.columns:
+        v_mano = df['mano_fro_norm'].dropna().values
+        v_true = df['acc_st_true'].dropna().values
+        mae_m  = np.abs(v_mano - v_true)
+        summary_rows.append(dict(
+            metric='Est ACC (MANO Frobenius)', method='MANO', type='ST',
+            mean_est=v_mano.mean(), std_est=v_mano.std(),
+            mean_true=v_true.mean(), std_true=v_true.std(),
+            mean_mae=mae_m.mean(),  std_mae=mae_m.std(),
+        ))
+    pd.DataFrame(summary_rows).to_csv(
+        f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_summary.csv',
+        index=False, float_format='%.6f')
+    print(f"✓ summary.csv сохранён")
+
+    # ── Figure 4: MANO scatter ─────────────────────────────────────────────
+    if 'mano_fro_norm' in df.columns:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        lo = min(df['acc_st_true'].min(), df['mano_fro_norm'].min()) - 0.02
+        hi = max(df['acc_st_true'].max(), df['mano_fro_norm'].max()) + 0.02
+        ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y')
+        ax.scatter(df['acc_st_true'], df['mano_fro_norm'],
+                   color='#7B1FA2', s=30, alpha=0.75, label='MANO')
+        ax.set_xlabel('True Accuracy (ACC$_{ST}$)')
+        ax.set_ylabel('MANO (Frobenius norm)')
+        ax.legend(); ax.grid(linestyle='--', alpha=0.4)
+        ax.set_aspect('equal', 'box')
+        plt.tight_layout()
+        plt.savefig(
+            f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_scatter_mano.png',
+            dpi=150)
+        plt.savefig(
+            f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_scatter_mano.pdf')
+        plt.close()
+        print("✓ scatter_mano")
+
+    # ── Figure 5: Best testset — Acc/FDR vs rank ──────────────────────────
+    if tile_data:
+        best_key = max(
+            tile_data,
+            key=lambda k: tile_data[k]['acc_st_true']
+        )
+        td = tile_data[best_key]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(td['normalized_rank'], td['Acc_true'],
+                label='True Acc',     linewidth=1.5, linestyle='--',
+                color='steelblue')
+        ax.plot(td['normalized_rank'], td['QVAL_true'],
+                label='True FDR',     linewidth=1.5, linestyle='--',
+                color='#78909C')
+        ax.plot(td['normalized_rank'], td['Acc_est_MM'],
+                label='ENGPE-TA',     linewidth=1.8, color=COLOR_ENGPE_TA)
+        ax.plot(td['normalized_rank'], td['QVAL_mixmax'],
+                label='ENGPE-TA FDR', linewidth=1.5, color=COLOR_ENGPE_TA,
+                linestyle=':')
+        ax.set_xlabel('Fraction accepted')
+        ax.set_ylabel('Value')
+        ax.legend(); ax.grid(linestyle='--', alpha=0.4)
+        plt.tight_layout()
+        plt.savefig(
+            f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_best_acc_fdr.png',
+            dpi=150)
+        plt.savefig(
+            f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_best_acc_fdr.pdf')
+        plt.close()
+        print(f"✓ best_acc_fdr  (testset={best_key})")
+
+    # ── Figure 6: Best testset — Precision-Recall curve ───────────────────
+    if tile_data:
+        td = tile_data[best_key]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(td['recall_true'], td['precision_true'],
+                label='True PR',     linewidth=1.5, color='steelblue')
+        ax.plot(td['recall_est'],  td['precision_est'],
+                label='ENGPE-TA PR', linewidth=1.8, color=COLOR_ENGPE_TA)
+        ax.set_xlabel('Recall')
+        ax.set_ylabel('Precision')
+        ax.legend(); ax.grid(linestyle='--', alpha=0.4)
+        plt.tight_layout()
+        plt.savefig(
+            f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_best_pr_curve.png',
+            dpi=150)
+        plt.savefig(
+            f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_best_pr_curve.pdf')
+        plt.close()
+        print("✓ best_pr_curve")
+
+    # ── Subsampled curves CSV (for cross-dataset combining) ───────────────
+    N_CURVE_PTS = 100
+    curve_rows  = []
+    for key, td in tile_data.items():
+        n   = td['n_samples']
+        idx = np.linspace(0, n - 1, N_CURVE_PTS, dtype=int)
+        for i in idx:
+            curve_rows.append(dict(
+                dataset      = 'breeds',
+                breeds_name  = BREEDS_NAME,
+                testset      = key,
+                frac_accepted= float(td['normalized_rank'][i]),
+                acc_true     = float(td['Acc_true'][i]),
+                acc_est_mm   = float(td['Acc_est_MM'][i]),
+                acc_est_tdc  = float(td['Acc_est'][i]),
+                fdr_mixmax   = float(td['QVAL_mixmax'][i]),
+                fdr_tdc      = float(td['QVAL_TDC'][i]),
+                fdr_true     = float(td['QVAL_true'][i]),
+            ))
+    pd.DataFrame(curve_rows).to_csv(
+        f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_acc_curves.csv',
+        index=False, float_format='%.6f')
+    print(f"✓ acc_curves.csv сохранён ({len(curve_rows)} строк)")
 
     # ── Финальный summary ─────────────────────────────────────────────────
     print(f"\n{'='*80}")
