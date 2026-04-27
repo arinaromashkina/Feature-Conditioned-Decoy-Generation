@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,14 +12,14 @@ from tqdm import tqdm
 
 class RobustFeatureNormalizer(nn.Module):
     """
-    Робастная нормализация признаков для OOD тест-данных.
-    
-    Алгоритм:
-      1. Накапливает median и IQR на train (устойчиво к выбросам)
-      2. Нормализует: x_norm = clip((x - median) / IQR, -clip_val, clip_val)
-      3. После clip — tanh сжимает всё в (-1, 1) без потери информации
-    
-    Всё сохраняется в state_dict как буферы.
+    Robust feature normalization for OOD test data.
+
+    Algorithm:
+      1. Accumulates median and IQR on train data (robust to outliers).
+      2. Normalizes: x_norm = tanh(clip((x - median) / IQR, -clip_val, clip_val))
+      3. tanh compresses everything to (-1, 1) without information loss.
+
+    Running statistics are stored in state_dict as buffers.
     """
     def __init__(self, feature_dim, clip_val=5.0, momentum=0.01, eps=1e-6):
         super().__init__()
@@ -29,16 +28,14 @@ class RobustFeatureNormalizer(nn.Module):
         self.momentum    = momentum
         self.eps         = eps
 
-        # Робастные статистики (median + IQR вместо mean + std)
         self.register_buffer('running_median', torch.zeros(feature_dim))
         self.register_buffer('running_iqr',    torch.ones(feature_dim))
         self.register_buffer('initialized',    torch.tensor(False))
 
     @torch.no_grad()
     def _update_stats(self, x):
-        """Обновляем running median и IQR через EMA."""
+        """Update running median and IQR via exponential moving average."""
         batch_median = x.median(dim=0).values
-
         q75 = torch.quantile(x, 0.75, dim=0)
         q25 = torch.quantile(x, 0.25, dim=0)
         batch_iqr = (q75 - q25).clamp(min=self.eps)
@@ -48,35 +45,26 @@ class RobustFeatureNormalizer(nn.Module):
             self.running_iqr.copy_(batch_iqr)
             self.initialized.fill_(True)
         else:
-            self.running_median.mul_(1 - self.momentum).add_(
-                batch_median * self.momentum)
-            self.running_iqr.mul_(1 - self.momentum).add_(
-                batch_iqr * self.momentum)
+            self.running_median.mul_(1 - self.momentum).add_(batch_median * self.momentum)
+            self.running_iqr.mul_(1 - self.momentum).add_(batch_iqr * self.momentum)
 
     def forward(self, x):
         if self.training:
             self._update_stats(x)
 
         if not self.initialized:
-            # Если статистика ещё не собрана — просто tanh
             return torch.tanh(x * 0.01)
 
-        # 1. Центрируем и масштабируем по IQR
         x_norm = (x - self.running_median) / (self.running_iqr + self.eps)
-
-        # 2. Clip жёсткий — убивает совсем дикие выбросы
         x_norm = x_norm.clamp(-self.clip_val, self.clip_val)
-
-        # 3. Tanh — мягкое сжатие в (-1, 1), сохраняет градиенты
         x_norm = torch.tanh(x_norm / self.clip_val)
-
         return x_norm
 
 
 class ActNorm(nn.Module):
     """
     Activation normalization — data-driven per-channel scale+bias.
-    Initialized from the first FORWARD batch so output has mean=0, std=1.
+    Initialized from the first forward batch so output has mean=0, std=1.
     `initialized` is registered as a buffer so it is saved/loaded with state_dict.
     """
     def __init__(self, dim):
@@ -105,14 +93,14 @@ class ActNorm(nn.Module):
 
 class CouplingLayer(nn.Module):
     """
-    Affine coupling layer operating on the full score vector.
-    Conditioned on encoded CNN features.
+    Affine coupling layer operating on the full score vector,
+    conditioned on encoded CNN features.
 
     Split  : x1 = x[:d],  x2 = x[d:]
     Forward: z2 = x2 * exp(s(x1, feat)) + t(x1, feat)
     Reverse: x2 = (z2 - t) * exp(-s)
 
-    Scale head uses Tanh so s ∈ (-1, 1) — prevents exp blow-up.
+    Scale head uses Tanh so s ∈ (-1, 1), preventing exp blow-up.
     """
     def __init__(self, dim, feature_dim, hidden_dim=256, mask_type='first_half'):
         super().__init__()
@@ -138,10 +126,7 @@ class CouplingLayer(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.GELU(),
         )
-        self.scale_head = nn.Sequential(
-            nn.Linear(hidden_dim // 2, self.d_out),
-            nn.Tanh(),
-        )
+        self.scale_head     = nn.Sequential(nn.Linear(hidden_dim // 2, self.d_out), nn.Tanh())
         self.translate_head = nn.Linear(hidden_dim // 2, self.d_out)
 
         # Initialize to identity transform
@@ -185,12 +170,12 @@ class CouplingLayer(nn.Module):
 
 class ScoreShiftFlow(nn.Module):
     """
-    Single normalizing flow that models P(decoy_score_vector | features).
+    Conditional normalizing flow that models P(null_score_vector | features).
 
     Architecture:
       - RobustFeatureNormalizer: median/IQR + clamp + tanh → always ∈ (-1, 1)
-      - Feature encoder: feature_dim → encoder_dim
-      - n_flows CouplingLayers with alternating masks
+      - Feature encoder: feature_dim → encoder_dim (2-layer MLP with LayerNorm + GELU)
+      - n_flows CouplingLayers with alternating first-half/second-half masks
       - ActNorm between every pair of coupling layers
     """
     def __init__(self,
@@ -206,12 +191,9 @@ class ScoreShiftFlow(nn.Module):
         self.n_flows     = n_flows
         self._log_2pi    = float(np.log(2 * np.pi))
 
-        # ── Робастная нормализация признаков ─────────────────────────────
-        # Любые OOD значения → выход всегда ∈ (-1, 1)
         self.feature_norm = RobustFeatureNormalizer(
             feature_dim, clip_val=clip_val, momentum=0.01)
 
-        # Feature encoder
         self.feature_encoder = nn.Sequential(
             nn.Linear(feature_dim, 256),
             nn.LayerNorm(256),
@@ -221,20 +203,15 @@ class ScoreShiftFlow(nn.Module):
             nn.GELU(),
         )
 
-        # Alternating coupling layers + actnorm
         self.layers = nn.ModuleList()
         for i in range(n_flows):
             mask = 'first_half' if i % 2 == 0 else 'second_half'
-            self.layers.append(
-                CouplingLayer(score_dim, encoder_dim, hidden_dim, mask)
-            )
+            self.layers.append(CouplingLayer(score_dim, encoder_dim, hidden_dim, mask))
             if i < n_flows - 1:
                 self.layers.append(ActNorm(score_dim))
 
     def encode(self, features):
-        # Нормализуем → всегда ∈ (-1, 1) даже при OOD в миллион раз
-        features_norm = self.feature_norm(features)
-        return self.feature_encoder(features_norm)
+        return self.feature_encoder(self.feature_norm(features))
 
     def forward(self, scores, features, reverse=False):
         """
@@ -253,7 +230,6 @@ class ScoreShiftFlow(nn.Module):
                     x, ld = layer(x, enc, reverse=False)
                 log_det_sum = log_det_sum + ld
             return x, log_det_sum
-
         else:
             z = scores
             for layer in reversed(self.layers):
@@ -267,8 +243,7 @@ class ScoreShiftFlow(nn.Module):
     def log_prob(self, scores, features):
         """log P(scores | features) under the learned null distribution."""
         z, log_det = self.forward(scores, features, reverse=False)
-        log_pz     = -0.5 * (z ** 2).sum(dim=1) \
-                     - 0.5 * self.score_dim * self._log_2pi
+        log_pz     = -0.5 * (z ** 2).sum(dim=1) - 0.5 * self.score_dim * self._log_2pi
         return log_pz + log_det
 
     def sample(self, features):
@@ -279,12 +254,12 @@ class ScoreShiftFlow(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Wrapper
+# Wrapper with training and inference helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ScoreShiftFlowWrapper(nn.Module):
     """
-    Wraps ScoreShiftFlow with train / generate_decoys helpers.
+    Wraps ScoreShiftFlow with train_flow() and generate_decoys() helpers.
     """
     def __init__(self,
                  num_classes = 10,
@@ -303,10 +278,6 @@ class ScoreShiftFlowWrapper(nn.Module):
             encoder_dim = encoder_dim,
             clip_val    = clip_val,
         )
-        print("✓ ScoreShiftFlow defined — single flow over full score vector")
-        print(f"  clip_val={clip_val}  (OOD robust feature normalization)")
-
-    # ── Training ──────────────────────────────────────────────────────────────
 
     def train_flow(self,
                    score_dataset,
@@ -317,12 +288,11 @@ class ScoreShiftFlowWrapper(nn.Module):
                    patience   = 5,
                    grad_clip  = 1.0):
         self.flow.to(device)
-        self.flow.train()   # RobustFeatureNormalizer накапливает статистику
+        self.flow.train()
 
         loader    = DataLoader(score_dataset, batch_size=batch_size,
                                shuffle=True, num_workers=0, pin_memory=True)
-        optimizer = torch.optim.AdamW(self.flow.parameters(), lr=lr,
-                                      weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(self.flow.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=epochs, eta_min=lr * 0.01)
 
@@ -338,8 +308,7 @@ class ScoreShiftFlowWrapper(nn.Module):
                 features     = features.to(device)
                 target_decoy = target_decoy.to(device)
 
-                log_prob = self.flow.log_prob(target_decoy, features)
-                loss     = -log_prob.mean()
+                loss = -self.flow.log_prob(target_decoy, features).mean()
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -354,14 +323,12 @@ class ScoreShiftFlowWrapper(nn.Module):
 
             if (epoch + 1) % 5 == 0:
                 print(f"  Epoch {epoch+1:3d}/{epochs}  "
-                      f"loss={avg_loss:.4f}  "
-                      f"lr={scheduler.get_last_lr()[0]:.2e}")
+                      f"loss={avg_loss:.4f}  lr={scheduler.get_last_lr()[0]:.2e}")
 
             if avg_loss < best_loss - 1e-4:
                 best_loss  = avg_loss
                 no_improve = 0
-                best_state = {k: v.clone()
-                              for k, v in self.flow.state_dict().items()}
+                best_state = {k: v.clone() for k, v in self.flow.state_dict().items()}
             else:
                 no_improve += 1
                 if no_improve >= patience:
@@ -371,27 +338,21 @@ class ScoreShiftFlowWrapper(nn.Module):
 
         if best_state is not None:
             self.flow.load_state_dict(best_state)
-        print(f"  ✓ Training complete. Best loss: {best_loss:.4f}")
+        print(f"  Training complete. Best loss: {best_loss:.4f}")
         return self
-
-    # ── Inference ─────────────────────────────────────────────────────────────
 
     def generate_decoys(self, score_dataset, device='cuda', n_samples=1):
         """
         Returns:
-          model_scores  : (N, C)  original CNN scores
-          decoy_scores  : (N, C)  sampled null score vectors
-          labels        : (N,)    true labels
+          model_scores : (N, C)  original classifier logits
+          decoy_scores : (N, C)  sampled null score vectors
+          labels       : (N,)    true labels
         """
         self.flow.to(device)
-        self.flow.eval()   # RobustFeatureNormalizer использует frozen статистику
+        self.flow.eval()
 
-        cnn_list   = []
-        decoy_list = []
-        lbl_list   = []
-
-        loader = DataLoader(score_dataset, batch_size=256,
-                            shuffle=False, num_workers=0)
+        cnn_list, decoy_list, lbl_list = [], [], []
+        loader = DataLoader(score_dataset, batch_size=256, shuffle=False, num_workers=0)
 
         with torch.no_grad():
             for cnn_scores, features, target_decoy, labels in loader:
@@ -401,8 +362,7 @@ class ScoreShiftFlowWrapper(nn.Module):
                     decoy = self.flow.sample(features)
                 else:
                     samples = torch.stack(
-                        [self.flow.sample(features) for _ in range(n_samples)],
-                        dim=0)
+                        [self.flow.sample(features) for _ in range(n_samples)], dim=0)
                     decoy = samples.mean(dim=0)
 
                 cnn_list.append(cnn_scores.cpu().numpy())
@@ -413,19 +373,17 @@ class ScoreShiftFlowWrapper(nn.Module):
                 np.concatenate(decoy_list, axis=0),
                 np.concatenate(lbl_list,   axis=0))
 
-    # ── OOD диагностика ───────────────────────────────────────────────────────
-
     def diagnose_feature_ood(self, score_dataset, device='cuda', tile_name=''):
         """
-        Показывает насколько фичи тайла OOD относительно train статистики.
-        Вызывать после train_flow (когда статистика уже собрана).
+        Reports how far test features are from the training distribution
+        in IQR units. Call after train_flow() when statistics are frozen.
         """
         self.flow.to(device)
         self.flow.eval()
 
         norm = self.flow.feature_norm
         if not norm.initialized:
-            print("  ⚠ Normalizer not initialized — train first")
+            print("  Normalizer not initialized — train first")
             return
 
         loader = DataLoader(score_dataset, batch_size=256, shuffle=False)
@@ -435,17 +393,12 @@ class ScoreShiftFlowWrapper(nn.Module):
                 all_features.append(features.to(device))
         features = torch.cat(all_features, dim=0)
 
-        # Отклонение от train median в единицах IQR
-        deviation = ((features - norm.running_median) /
-                     (norm.running_iqr + 1e-6)).abs()
+        deviation = ((features - norm.running_median) / (norm.running_iqr + 1e-6)).abs()
 
-        print(f"  OOD диагностика [{tile_name}]:")
+        print(f"  OOD diagnostics [{tile_name}]:")
         print(f"    median deviation (IQR units) : {deviation.median():.2f}")
         print(f"    95th pct deviation            : {deviation.quantile(0.95):.2f}")
         print(f"    max deviation                 : {deviation.max():.2f}")
-        print(f"    % features с deviation >  5  : "
-              f"{(deviation > 5).float().mean() * 100:.1f}%")
-        print(f"    % features с deviation > 10  : "
-              f"{(deviation > 10).float().mean() * 100:.1f}%")
-        print(f"    % features с deviation > 100 : "
-              f"{(deviation > 100).float().mean() * 100:.1f}%")
+        print(f"    % features with deviation >  5: {(deviation > 5).float().mean() * 100:.1f}%")
+        print(f"    % features with deviation > 10: {(deviation > 10).float().mean() * 100:.1f}%")
+        print(f"    % features with deviation >100: {(deviation > 100).float().mean() * 100:.1f}%")
