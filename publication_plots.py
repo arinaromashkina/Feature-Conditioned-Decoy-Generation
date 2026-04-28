@@ -233,19 +233,17 @@ print('✓ Plot 2 done\n')
 # ════════════════════════════════════════════════════════════════════════════════
 
 # ── Load acc_curves data ───────────────────────────────────────────────────────
-curves_cifar  = pd.read_csv('results_ds/cifar-10-c/results_acc_curves.csv')
-curves_bcss   = pd.read_csv('results_ds/bcss/norm_flow_acc_curves.csv')
-curves_breeds = pd.concat([
-    pd.read_csv(f'results_ds/breeds/breeds_{n}_acc_curves.csv')
-    for n in BREEDS_NAMES
-], ignore_index=True)
+curves_cifar    = pd.read_csv('results_ds/cifar-10-c/results_acc_curves.csv')
+curves_entity13 = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves.csv')
 
-# For BREEDS, create unique test-set id (testset names repeat across sub-datasets)
-curves_breeds['_uid'] = curves_breeds['breeds_name'] + '/' + curves_breeds['testset']
+# Breeds: separate splits (logit-based x-axis)
+curves_entity13_all  = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves_all.csv')
+curves_entity13_corr = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves_corruptions.csv')
+curves_entity13_best = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves_best.csv')
 
-FA_GRID = np.linspace(0, 0.98, 200)
-C_TRUE  = '#1565C0'    # dark blue  – true curves
-C_EST   = COLOR_ENGPE_TA  # pink-red  – ENGPE-TA curves
+RECALL_GRID = np.linspace(0, 1.0,  200)
+C_TRUE  = '#1565C0'       # dark blue  – true curves
+C_EST   = COLOR_ENGPE_TA  # pink-red   – ENGPE-TA curves
 
 
 def _interp(x, y, grid):
@@ -255,100 +253,135 @@ def _interp(x, y, grid):
                      left=y[order][0], right=y[order][-1])
 
 
-def average_curves(curves_df, id_col):
+def _prec_at_recall(rec, prec, recall_grid):
     """
-    For each test set, interpolate acc/fdr curves and PR curves to FA_GRID.
-    Returns dict of mean/std arrays.
+    Given parametric (rec, prec) curve, return precision at fixed recall levels.
+
+    rec may be non-monotone (clipped at 1) so we sort by rec ascending and
+    interpolate.  At recall=1 this gives precision at the lowest threshold
+    (most permissive), which is the correct PR-curve starting point.
+    """
+    order  = np.argsort(rec)
+    r_sort = rec[order]
+    p_sort = prec[order]
+    # np.interp requires strictly-increasing xp; duplicates at rec=1 are
+    # handled by keeping the first occurrence (smallest fa → lowest prec).
+    _, first = np.unique(r_sort, return_index=True)
+    return np.interp(recall_grid, r_sort[first], p_sort[first],
+                     left=p_sort[first][0], right=p_sort[first][-1])
+
+
+def average_curves(curves_df, id_col, x_col='frac_accepted'):
+    """
+    For each test set, interpolate acc/fdr curves to a common x grid and
+    PR curves to RECALL_GRID.  Returns dict of mean/std arrays.
+
+    x_col: 'frac_accepted' (CIFAR) or 'logit_threshold' (breeds).
+    The x grid is derived from the 1st–99th percentile of x_col across all rows.
+    frac_accepted is always used for PR recall computation regardless of x_col.
     """
     acc_true_list, acc_est_list = [], []
     fdr_true_list, fdr_est_list = [], []
-    pr_true_p, pr_true_r       = [], []
-    pr_est_p,  pr_est_r        = [], []
+    pr_true_list,  pr_est_list  = [], []
+
+    all_x = curves_df[x_col].values
+    x_min = np.nanpercentile(all_x, 1)
+    x_max = np.nanpercentile(all_x, 99)
+    X_GRID = np.linspace(x_min, x_max, 200)
+
+    has_fa = 'frac_accepted' in curves_df.columns
 
     for _, group in curves_df.groupby(id_col):
-        group = group.sort_values('frac_accepted')
-        fa   = group['frac_accepted'].values
+        group = group.sort_values(x_col)
+        x    = group[x_col].values
         at   = group['acc_true'].values
         ae   = group['acc_est_mm'].values
-        ft   = np.clip(group['fdr_true'].values,    0, 1)
-        fe   = np.clip(group['fdr_mixmax'].values,  0, 1)
+        ft   = np.clip(group['fdr_true'].values,   0, 1)
+        fe   = np.clip(group['fdr_mixmax'].values, 0, 1)
+        fa   = group['frac_accepted'].values if has_fa else x
 
-        if len(fa) < 2:
+        if len(x) < 2:
             continue
 
-        acc_true_list.append(_interp(fa, at, FA_GRID))
-        acc_est_list.append( _interp(fa, ae, FA_GRID))
-        fdr_true_list.append(_interp(fa, ft, FA_GRID))
-        fdr_est_list.append( _interp(fa, fe, FA_GRID))
+        acc_true_list.append(_interp(x, at, X_GRID))
+        acc_est_list.append( _interp(x, ae, X_GRID))
+        fdr_true_list.append(_interp(x, ft, X_GRID))
+        fdr_est_list.append( _interp(x, fe, X_GRID))
 
-        # Precision-Recall derivation:
-        # precision(t) = 1 - FDR(t)
-        # recall(t) = (1 - FDR(t)) * (1 - t) / acc_true(0)
-        # because: total_TP = acc_true(0)*N and D(t)=N*(1-t)
+        # Precision-Recall:
+        #   precision(threshold) = 1 - FDR(threshold)
+        #   recall(threshold)    = (1 - FDR(threshold)) * (1 - fa) / acc_true(0)
+        #   because total_TP = acc_true(fa=0)*N  and  D = N*(1-fa)
+        #
+        # recall_est can exceed 1 when ENGPE-TA underestimates FDR at low
+        # thresholds.  We parametrise the PR curve by RECALL (not threshold) to
+        # avoid the degenerate flat segment that arises from clipping.
         acc0 = max(at[0], 1e-6)
-        pt = np.clip(1 - ft, 0, 1)
-        pe = np.clip(1 - fe, 0, 1)
-        rt = np.clip((1 - ft) * (1 - fa) / acc0, 0, 1)
-        re = np.clip((1 - fe) * (1 - fa) / acc0, 0, 1)
+        # Interpolate frac_accepted to X_GRID for recall computation
+        fa_grid = _interp(x, fa, X_GRID)
+        ft_grid = _interp(x, ft, X_GRID)
+        fe_grid = _interp(x, fe, X_GRID)
+        pt = np.clip(1 - ft_grid, 0, 1)
+        pe = np.clip(1 - fe_grid, 0, 1)
+        rt = np.clip((1 - ft_grid) * (1 - fa_grid) / acc0, 0, 1)
+        re = np.clip((1 - fe_grid) * (1 - fa_grid) / acc0, 0, 1)
 
-        pr_true_p.append(_interp(fa, pt, FA_GRID))
-        pr_true_r.append(_interp(fa, rt, FA_GRID))
-        pr_est_p.append( _interp(fa, pe, FA_GRID))
-        pr_est_r.append( _interp(fa, re, FA_GRID))
+        pr_true_list.append(_prec_at_recall(rt, pt, RECALL_GRID))
+        pr_est_list.append( _prec_at_recall(re, pe, RECALL_GRID))
 
     def _ms(lst):
         arr = np.array(lst)
         return arr.mean(axis=0), arr.std(axis=0)
 
-    am, as_ = _ms(acc_true_list)
-    em, es  = _ms(acc_est_list)
-    ftm, fts = _ms(fdr_true_list)
-    fem, fes = _ms(fdr_est_list)
+    am,  as_  = _ms(acc_true_list)
+    em,  es   = _ms(acc_est_list)
+    ftm, fts  = _ms(fdr_true_list)
+    fem, fes  = _ms(fdr_est_list)
+    ptm, pts  = _ms(pr_true_list)
+    pem, pes  = _ms(pr_est_list)
 
     return dict(
-        fa       = FA_GRID,
-        acc_true_mean=am, acc_true_std=as_,
-        acc_est_mean =em, acc_est_std =es,
-        fdr_true_mean=ftm, fdr_true_std=fts,
-        fdr_est_mean =fem, fdr_est_std =fes,
-        pr_true_p    = np.array(pr_true_p).mean(axis=0),
-        pr_true_r    = np.array(pr_true_r).mean(axis=0),
-        pr_est_p     = np.array(pr_est_p).mean(axis=0),
-        pr_est_r     = np.array(pr_est_r).mean(axis=0),
+        x_grid        = X_GRID,
+        acc_true_mean = am,  acc_true_std = as_,
+        acc_est_mean  = em,  acc_est_std  = es,
+        fdr_true_mean = ftm, fdr_true_std = fts,
+        fdr_est_mean  = fem, fdr_est_std  = fes,
+        pr_recall     = RECALL_GRID,
+        pr_true_mean  = ptm, pr_true_std  = pts,
+        pr_est_mean   = pem, pr_est_std   = pes,
     )
 
 
-def plot_acc_fdr(avg, filename):
+def plot_acc_fdr(avg, filename, x_label='Fraction accepted'):
     fig, ax = plt.subplots(figsize=(6, 4))
-    fa = avg['fa']
+    x = avg['x_grid']
 
     # True Acc & FDR
-    ax.plot(fa, avg['acc_true_mean'], color=C_TRUE, lw=1.8, label='True Acc')
-    ax.fill_between(fa,
+    ax.plot(x, avg['acc_true_mean'], color=C_TRUE, lw=1.8, label='True Acc')
+    ax.fill_between(x,
                     np.clip(avg['acc_true_mean'] - avg['acc_true_std'], 0, 1),
                     np.clip(avg['acc_true_mean'] + avg['acc_true_std'], 0, 1),
                     alpha=0.15, color=C_TRUE)
-    ax.plot(fa, avg['fdr_true_mean'], color=C_TRUE, lw=1.5, ls='--', label='True FDR')
-    ax.fill_between(fa,
+    ax.plot(x, avg['fdr_true_mean'], color=C_TRUE, lw=1.5, ls='--', label='True FDR')
+    ax.fill_between(x,
                     np.clip(avg['fdr_true_mean'] - avg['fdr_true_std'], 0, 1),
                     np.clip(avg['fdr_true_mean'] + avg['fdr_true_std'], 0, 1),
                     alpha=0.15, color=C_TRUE)
 
     # ENGPE-TA Acc & FDR
-    ax.plot(fa, avg['acc_est_mean'], color=C_EST, lw=1.8, label='ENGPE-TA Acc')
-    ax.fill_between(fa,
+    ax.plot(x, avg['acc_est_mean'], color=C_EST, lw=1.8, label='ENGPE-TA Acc')
+    ax.fill_between(x,
                     np.clip(avg['acc_est_mean'] - avg['acc_est_std'], 0, 1),
                     np.clip(avg['acc_est_mean'] + avg['acc_est_std'], 0, 1),
                     alpha=0.15, color=C_EST)
-    ax.plot(fa, avg['fdr_est_mean'], color=C_EST, lw=1.5, ls='--', label='ENGPE-TA FDR')
-    ax.fill_between(fa,
+    ax.plot(x, avg['fdr_est_mean'], color=C_EST, lw=1.5, ls='--', label='ENGPE-TA FDR')
+    ax.fill_between(x,
                     np.clip(avg['fdr_est_mean'] - avg['fdr_est_std'], 0, 1),
                     np.clip(avg['fdr_est_mean'] + avg['fdr_est_std'], 0, 1),
                     alpha=0.15, color=C_EST)
 
-    ax.set_xlabel('Fraction accepted')
+    ax.set_xlabel(x_label)
     ax.set_ylabel('Value')
-    ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.05)
     ax.legend(fontsize=9, loc='best', framealpha=0.9)
     ax.grid(linestyle='--', alpha=0.4)
@@ -358,11 +391,19 @@ def plot_acc_fdr(avg, filename):
 
 def plot_pr_curve(avg, filename):
     fig, ax = plt.subplots(figsize=(6, 4))
+    rec = avg['pr_recall']
 
-    ax.plot(avg['pr_true_r'], avg['pr_true_p'],
-            color=C_TRUE, lw=1.8, label='True PR')
-    ax.plot(avg['pr_est_r'], avg['pr_est_p'],
-            color=C_EST, lw=1.8, ls='--', label='ENGPE-TA PR')
+    ax.plot(rec, avg['pr_true_mean'], color=C_TRUE, lw=1.8, label='True PR')
+    ax.fill_between(rec,
+                    np.clip(avg['pr_true_mean'] - avg['pr_true_std'], 0, 1),
+                    np.clip(avg['pr_true_mean'] + avg['pr_true_std'], 0, 1),
+                    alpha=0.15, color=C_TRUE)
+
+    ax.plot(rec, avg['pr_est_mean'], color=C_EST, lw=1.8, ls='--', label='ENGPE-TA PR')
+    ax.fill_between(rec,
+                    np.clip(avg['pr_est_mean'] - avg['pr_est_std'], 0, 1),
+                    np.clip(avg['pr_est_mean'] + avg['pr_est_std'], 0, 1),
+                    alpha=0.15, color=C_EST)
 
     ax.set_xlabel('Recall')
     ax.set_ylabel('Precision')
@@ -375,17 +416,26 @@ def plot_pr_curve(avg, filename):
 
 
 # ── Compute averages and save plots ───────────────────────────────────────────
-avg_cifar  = average_curves(curves_cifar,  'corruption')
-avg_bcss   = average_curves(curves_bcss,   'tile')
-avg_breeds = average_curves(curves_breeds, '_uid')
 
-plot_acc_fdr(avg_cifar,  'fig3_acc_fdr_cifar10c')
-plot_acc_fdr(avg_bcss,   'fig3_acc_fdr_bcss')
-plot_acc_fdr(avg_breeds, 'fig3_acc_fdr_breeds')
+# CIFAR-10-C: fraction accepted as x-axis (legacy format)
+avg_cifar = average_curves(curves_cifar, 'corruption', x_col='frac_accepted')
+plot_acc_fdr(avg_cifar,  'fig3_acc_fdr_cifar10c',  x_label='Fraction accepted')
+plot_pr_curve(avg_cifar, 'fig4_pr_cifar10c')
 
-plot_pr_curve(avg_cifar,  'fig4_pr_cifar10c')
-plot_pr_curve(avg_bcss,   'fig4_pr_bcss')
-plot_pr_curve(avg_breeds, 'fig4_pr_breeds')
+# Entity13 — all test sets (logit threshold x-axis)
+avg_entity13_all = average_curves(curves_entity13_all, 'testset', x_col='logit_threshold')
+plot_acc_fdr(avg_entity13_all,  'fig3_acc_fdr_entity13_all',  x_label='Logit threshold')
+plot_pr_curve(avg_entity13_all, 'fig4_pr_entity13_all')
+
+# Entity13 — corruptions only
+avg_entity13_corr = average_curves(curves_entity13_corr, 'testset', x_col='logit_threshold')
+plot_acc_fdr(avg_entity13_corr,  'fig3_acc_fdr_entity13_corruptions',  x_label='Logit threshold')
+plot_pr_curve(avg_entity13_corr, 'fig4_pr_entity13_corruptions')
+
+# Entity13 — best (single closest-to-train corruption test set)
+avg_entity13_best = average_curves(curves_entity13_best, 'testset', x_col='logit_threshold')
+plot_acc_fdr(avg_entity13_best,  'fig3_acc_fdr_entity13_best',  x_label='Logit threshold')
+plot_pr_curve(avg_entity13_best, 'fig4_pr_entity13_best')
 
 print('✓ Plots 3 & 4 done\n')
 print('All publication plots saved to:', os.path.abspath(OUT_DIR))

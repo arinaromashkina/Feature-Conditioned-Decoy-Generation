@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import precision_recall_curve
 from tqdm import tqdm
 from scipy import stats
 from scipy.stats import spearmanr, ks_2samp
@@ -162,15 +161,17 @@ class CIFAR10CAllSeverities:
         return img, int(self.labels[idx])
 
 
-print("Loading CIFAR-10-C datasets...")
+print("Loading CIFAR-10-C datasets (19 corruptions × 5 severities = 95 sets)...")
 test_corrupted_datasets: dict = {}
 for corruption in CORRUPTIONS_TO_TEST:
-    try:
-        test_corrupted_datasets[corruption] = CIFAR10CAllSeverities(
-            CIFAR_C_PATH, corruption, transform=cifar_c_transform)
-        print(f"  ✓ {corruption}  ({len(test_corrupted_datasets[corruption])} samples)")
-    except Exception as exc:
-        print(f"  ✗ {corruption}: {exc}")
+    for severity in SEVERITIES:
+        key = f"{corruption}_s{severity}"
+        try:
+            test_corrupted_datasets[key] = CIFAR10CDataset(
+                CIFAR_C_PATH, corruption, severity, transform=cifar_c_transform)
+            print(f"  ✓ {key}  ({len(test_corrupted_datasets[key])} samples)")
+        except Exception as exc:
+            print(f"  ✗ {key}: {exc}")
 print(f"✓ Loaded {len(test_corrupted_datasets)} corrupted datasets")
 
 # ============================================================
@@ -471,6 +472,85 @@ score_shift_flow.eval()
 source_logits, ds_train, source_labels =  ms, ds_flow, ls = score_shift_flow.generate_decoys(
         train_score_dataset, device=DEVICE)
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from torchvision import datasets, transforms
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import precision_recall_curve
+from tqdm import tqdm
+from scipy import stats
+from scipy.stats import spearmanr, ks_2samp
+import os
+from bisect import bisect
+from collections import defaultdict
+from typing import Dict, Tuple, Optional, List
+
+print(f"NumPy version: {np.__version__}")
+print(f"PyTorch version: {torch.__version__}")
+
+np.set_printoptions(threshold=np.inf)
+
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.titlesize': 16,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 10,
+    'figure.titlesize': 18,
+    'font.family': 'serif',
+    'figure.dpi': 100,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight'
+})
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+NUM_CLASSES = 10
+print(f"Device: {DEVICE}")
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from torchvision import datasets, transforms
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import precision_recall_curve
+from tqdm import tqdm
+from scipy import stats
+from scipy.stats import spearmanr, ks_2samp
+import os
+from bisect import bisect
+from collections import defaultdict
+from typing import Dict, Tuple, Optional, List
+
+print(f"NumPy version: {np.__version__}")
+print(f"PyTorch version: {torch.__version__}")
+
+np.set_printoptions(threshold=np.inf)
+
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.titlesize': 16,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 10,
+    'figure.titlesize': 18,
+    'font.family': 'serif',
+    'figure.dpi': 100,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight'
+})
+
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -505,9 +585,11 @@ COLOR_ENGPE_TA = '#FF6D00'   # bright orange — ENGPE-TA
 all_results = []
 tile_data    = {}
 
-for corruption, dataset in test_corrupted_datasets.items():
+for key, dataset in test_corrupted_datasets.items():
+    corruption, sev_str = key.rsplit('_s', 1)
+    severity = int(sev_str)
     print(f"\n{'─'*60}")
-    print(f"  CORRUPTION: {corruption}")
+    print(f"  CORRUPTION: {corruption}  severity={severity}")
     print(f"{'─'*60}")
 
     score_ds = create_score_dataset_no_decoys(dataset, cifar_model, DEVICE)
@@ -565,11 +647,11 @@ for corruption, dataset in test_corrupted_datasets.items():
     sns.histplot(pred_scores[true_labels != pred_label],
                  bins=bins, stat=stat, color='red', kde=True,
                  fill=True, alpha=plot_alpha, label='incorrect')
-    plt.title(f'{corruption} — Score Distributions')
+    plt.title(f'{corruption} s{severity} — Score Distributions')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f'figures/distributions/{corruption}_scores.png', dpi=300)
-    plt.savefig(f'figures/distributions/{corruption}_scores.pdf')
+    plt.savefig(f'figures/distributions/{key}_scores.png', dpi=300)
+    plt.savefig(f'figures/distributions/{key}_scores.pdf')
     plt.show()
 
     # ── True FDR ─────────────────────────────────────────────────────────
@@ -626,12 +708,12 @@ for corruption, dataset in test_corrupted_datasets.items():
     plt.plot(pred_scores_sorted, QVAL_true,   label='True FDR')
     plt.xlabel('Score threshold')
     plt.ylabel('q-value (FDR)')
-    plt.title(f'{corruption} — FDR vs Score Threshold')
+    plt.title(f'{corruption} s{severity} — FDR vs Score Threshold')
     plt.legend()
     plt.grid()
     plt.tight_layout()
-    plt.savefig(f'figures/diagnostics/{corruption}_fdr_vs_score.png', dpi=300)
-    plt.savefig(f'figures/diagnostics/{corruption}_fdr_vs_score.pdf')
+    plt.savefig(f'figures/diagnostics/{key}_fdr_vs_score.png', dpi=300)
+    plt.savefig(f'figures/diagnostics/{key}_fdr_vs_score.pdf')
     plt.show()
 
     # ── TDC FDR ───────────────────────────────────────────────────────────
@@ -678,7 +760,7 @@ for corruption, dataset in test_corrupted_datasets.items():
     TP_from_i       = np.cumsum(correct_pred[::-1])[::-1]
     D_from_i        = np.arange(n, 0, -1)
 
-    tile_data[corruption] = dict(
+    tile_data[key] = dict(
         normalized_rank = normalized_rank.copy(),
         QVAL_TDC        = QVAL_TDC.copy(),
         QVAL_mixmax     = QVAL_mixmax.copy(),
@@ -693,6 +775,7 @@ for corruption, dataset in test_corrupted_datasets.items():
             (1 - QVAL_mixmax) * D_from_i / max(total_TP, 1), 0.0, 1.0),
         n_samples       = n,
         corruption      = corruption,
+        severity        = severity,
     )
 
     # ── Figure 3: Acc & FDR vs normalised rank ───────────────────────────
@@ -705,12 +788,12 @@ for corruption, dataset in test_corrupted_datasets.items():
     plt.plot(normalized_rank, Acc_est_MM,  label='Est Acc with Mix-Max')
     plt.xlabel('Normalized rank (fraction accepted)')
     plt.ylabel('Value')
-    plt.title(f'{corruption}')
+    plt.title(f'{corruption} s{severity}')
     plt.legend()
     plt.grid()
     plt.tight_layout()
-    plt.savefig(f'figures/accuracy/{corruption}_acc_fdr.png', dpi=300)
-    plt.savefig(f'figures/accuracy/{corruption}_acc_fdr.pdf')
+    plt.savefig(f'figures/accuracy/{key}_acc_fdr.png', dpi=300)
+    plt.savefig(f'figures/accuracy/{key}_acc_fdr.pdf')
     plt.show()
 
     # ── ACC_ST / ACC_TA metrics ───────────────────────────────────────────
@@ -746,6 +829,7 @@ for corruption, dataset in test_corrupted_datasets.items():
     # ── Collect results ───────────────────────────────────────────────────
     row = dict(
         corruption     = corruption,
+        severity       = severity,
         true_acc       = true_acc,
         mano_fro_norm  = mano_fro_norm,
         acc_st_true    = acc_st_true,
@@ -781,13 +865,14 @@ if all_results:
     # for later cross-dataset plots
     N_CURVE_PTS = 100
     curve_rows  = []
-    for key, td in tile_data.items():
+    for td_key, td in tile_data.items():
         n   = td['n_samples']
         idx = np.linspace(0, n - 1, N_CURVE_PTS, dtype=int)
         for i in idx:
             curve_rows.append(dict(
                 dataset       = 'cifar10c',
-                corruption    = key,
+                corruption    = td['corruption'],
+                severity      = td['severity'],
                 frac_accepted = float(td['normalized_rank'][i]),
                 acc_true      = float(td['Acc_true'][i]),
                 acc_est_mm    = float(td['Acc_est_MM'][i]),

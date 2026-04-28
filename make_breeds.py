@@ -627,7 +627,8 @@ for testset_idx, (testset, testloader) in enumerate(zip(testsets, testloaders)):
     TP_from_i = np.cumsum(correct_pred_s[::-1])[::-1]
     D_from_i  = np.arange(n, 0, -1)
     tile_data[ds_name] = dict(
-        normalized_rank = np.arange(n) / n,
+        normalized_rank  = np.arange(n) / n,
+        logit_threshold  = pred_scores_sorted.copy(),
         QVAL_TDC        = QVAL_TDC.copy(),
         QVAL_mixmax     = QVAL_mixmax.copy(),
         QVAL_true       = QVAL_true.copy(),
@@ -981,6 +982,7 @@ for key, td in tile_data.items():
     for i in idx:
         curve_rows.append(dict(
             dataset='breeds', breeds_name=BREEDS_NAME, testset=key,
+            logit_threshold=float(td['logit_threshold'][i]),
             frac_accepted=float(td['normalized_rank'][i]),
             acc_true=float(td['Acc_true'][i]),
             acc_est_mm=float(td['Acc_est_MM'][i]),
@@ -989,10 +991,32 @@ for key, td in tile_data.items():
             fdr_tdc=float(td['QVAL_TDC'][i]),
             fdr_true=float(td['QVAL_true'][i]),
         ))
-pd.DataFrame(curve_rows).to_csv(
-    f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}_acc_curves.csv',
-    index=False, float_format='%.6f')
-print(f"acc_curves.csv saved ({len(curve_rows)} rows)")
+
+df_curves = pd.DataFrame(curve_rows)
+base_csv  = f'BREEDS/figures/comparison/breeds_{BREEDS_NAME}'
+
+# All testsets
+df_curves.to_csv(f'{base_csv}_acc_curves_all.csv', index=False, float_format='%.6f')
+
+# Corruptions only
+corr_mask = df_curves['testset'].str.contains('corr_', na=False)
+df_curves[corr_mask].to_csv(
+    f'{base_csv}_acc_curves_corruptions.csv', index=False, float_format='%.6f')
+
+# Best testset: highest acc_st_true among corruption test sets (closest to train)
+corr_keys = [k for k in tile_data if 'corr_' in k]
+if corr_keys:
+    best_key = max(corr_keys, key=lambda k: tile_data[k]['acc_st_true'])
+else:
+    best_key = max(tile_data, key=lambda k: tile_data[k]['acc_st_true'])
+df_curves[df_curves['testset'] == best_key].to_csv(
+    f'{base_csv}_acc_curves_best.csv', index=False, float_format='%.6f')
+
+# Backward-compat single file (now includes logit_threshold)
+df_curves.to_csv(f'{base_csv}_acc_curves.csv', index=False, float_format='%.6f')
+
+print(f"acc_curves saved: all={len(df_curves)}, "
+      f"corruptions={corr_mask.sum()}, best_testset='{best_key}'")
 
 print(f"\n{'='*80}")
 print(f"BREEDS '{BREEDS_NAME}' pipeline complete.")
