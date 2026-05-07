@@ -9,13 +9,17 @@ np.set_printoptions(threshold=np.inf)
 
 # Set global font sizes for publication quality
 plt.rcParams.update({
-    'font.size': 14,
-    'axes.titlesize': 16,
-    'axes.labelsize': 14,
-    'xtick.labelsize': 12,
-    'ytick.labelsize': 12,
-    'legend.fontsize': 10,
-    'figure.titlesize': 18
+    'font.size': 22,
+    'axes.titlesize': 24,
+    'axes.labelsize': 22,
+    'xtick.labelsize': 20,
+    'ytick.labelsize': 20,
+    'legend.fontsize': 18,
+    'figure.titlesize': 26,
+    'lines.linewidth': 2.5,
+    'axes.linewidth': 1.5,
+    'xtick.major.width': 1.5,
+    'ytick.major.width': 1.5,
 })
 
 OUT_DIR = 'figures/publication'
@@ -74,13 +78,13 @@ def axis_lims(*arrs, margin=0.03):
 # ════════════════════════════════════════════════════════════════════════════════
 def plot_ta_vs_st(experiment_data, filename):
     """experiment_data: list of dict(label, df, color)"""
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 7))
 
     all_x = np.concatenate([d['df']['acc_st_true'].values for d in experiment_data])
     all_y = np.concatenate([d['df']['acc_ta_true'].values for d in experiment_data])
     lo, hi = axis_lims(all_x, all_y)
 
-    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y', zorder=2)
+    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=2.0, label='x=y', zorder=2)
 
     # CIFAR-10-C is plotted last so its points appear on top
     others = [d for d in experiment_data if d['label'] != 'CIFAR-10-C']
@@ -91,7 +95,7 @@ def plot_ta_vs_st(experiment_data, filename):
             d['df']['acc_ta_true'].values,
             label=d['label'],
             color=d['color'],
-            s=25, alpha=0.75, zorder=3,
+            s=50, alpha=0.75, zorder=3,
         )
 
     ax.set_xlabel('True ACC ST')
@@ -99,7 +103,7 @@ def plot_ta_vs_st(experiment_data, filename):
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect('equal', 'box')
-    ax.legend(fontsize=10)
+    ax.legend()
     ax.grid(linestyle='--', alpha=0.4)
     plt.tight_layout()
     save_fig(fig, filename)
@@ -131,13 +135,13 @@ print('✓ Plot 1.1 done\n')
 # Two versions: breeds combined / breeds detailed
 # ════════════════════════════════════════════════════════════════════════════════
 def plot_mano_vs_st(experiment_data, filename):
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 7))
 
     all_x = np.concatenate([d['df']['acc_st_true'].values for d in experiment_data])
     all_y = np.concatenate([d['df']['mano_fro_norm'].values for d in experiment_data])
     lo, hi = axis_lims(all_x, all_y)
 
-    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y', zorder=2)
+    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=2.0, label='x=y', zorder=2)
 
     for d in experiment_data:
         ax.scatter(
@@ -145,7 +149,7 @@ def plot_mano_vs_st(experiment_data, filename):
             d['df']['mano_fro_norm'].values,
             label=d['label'],
             color=d['color'],
-            s=25, alpha=0.75, zorder=3,
+            s=50, alpha=0.75, zorder=3,
         )
 
     ax.set_xlabel('True ACC ST')
@@ -153,7 +157,7 @@ def plot_mano_vs_st(experiment_data, filename):
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect('equal', 'box')
-    ax.legend(fontsize=10)
+    ax.legend()
     ax.grid(linestyle='--', alpha=0.4)
     plt.tight_layout()
     save_fig(fig, filename)
@@ -174,7 +178,7 @@ print('✓ Plot 1.2 done\n')
 def plot_est_vs_true(df, filename):
     available = [m for m in COMP_METHODS if f'est_{m}' in df.columns]
 
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 7))
 
     all_x = np.concatenate([df['acc_st_true'].values, df['acc_ta_true'].values])
     all_y_lists = [df['acc_ta_mm'].values]
@@ -183,7 +187,7 @@ def plot_est_vs_true(df, filename):
     all_y = np.concatenate(all_y_lists)
     lo, hi = axis_lims(all_x, all_y)
 
-    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.5, label='x=y', zorder=2)
+    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=2.0, label='x=y', zorder=2)
 
     # ── Competitors ───────────────────────────────────────────────────────────
     for idx, m in enumerate(COMP_METHODS):
@@ -195,17 +199,17 @@ def plot_est_vs_true(df, filename):
             label=m,
             marker=COMP_MARKERS[idx],
             color=COMP_COLORS[idx],
-            s=12, alpha=0.50, zorder=3,
+            s=25, alpha=0.55, zorder=3,
         )
 
     # ── ENGPE-TA (our method, drawn last, bright) ─────────────────────────────
     ax.scatter(
         df['acc_ta_true'].values,
         df['acc_ta_mm'].values,
-        label='ENGPE-TA',
+        label='ENGPE',
         marker='o',
         color=COLOR_ENGPE_TA,
-        s=30, alpha=1.0, zorder=5,
+        s=55, alpha=1.0, zorder=5,
         edgecolors='#BF360C', linewidths=0.5,
     )
 
@@ -214,7 +218,7 @@ def plot_est_vs_true(df, filename):
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect('equal', 'box')
-    ax.legend(fontsize=9, loc='lower right', framealpha=0.9)
+    ax.legend(loc='lower right', framealpha=0.9)
     ax.grid(linestyle='--', alpha=0.4)
     plt.tight_layout()
     save_fig(fig, filename)
@@ -223,6 +227,8 @@ def plot_est_vs_true(df, filename):
 plot_est_vs_true(df_cifar,  'fig2_est_vs_true_cifar10c')
 plot_est_vs_true(df_bcss,   'fig2_est_vs_true_bcss')
 plot_est_vs_true(df_breeds, 'fig2_est_vs_true_breeds')
+for bname, bdf in dfs_breeds.items():
+    plot_est_vs_true(bdf, f'fig2_est_vs_true_{bname}')
 
 print('✓ Plot 2 done\n')
 
@@ -234,12 +240,17 @@ print('✓ Plot 2 done\n')
 
 # ── Load acc_curves data ───────────────────────────────────────────────────────
 curves_cifar    = pd.read_csv('results_ds/cifar-10-c/results_acc_curves.csv')
+curves_bcss     = pd.read_csv('results_ds/bcss/norm_flow_acc_curves.csv')
 curves_entity13 = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves.csv')
 
 # Breeds: separate splits (logit-based x-axis)
 curves_entity13_all  = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves_all.csv')
 curves_entity13_corr = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves_corruptions.csv')
 curves_entity13_best = pd.read_csv('results_ds/breeds/breeds_entity13_acc_curves_best.csv')
+
+curves_entity30    = pd.read_csv('results_ds/breeds/breeds_entity30_acc_curves.csv')
+curves_living17    = pd.read_csv('results_ds/breeds/breeds_living17_acc_curves.csv')
+curves_nonliving26 = pd.read_csv('results_ds/breeds/breeds_nonliving26_acc_curves.csv')
 
 RECALL_GRID = np.linspace(0, 1.0,  200)
 C_TRUE  = '#1565C0'       # dark blue  – true curves
@@ -353,7 +364,7 @@ def average_curves(curves_df, id_col, x_col='frac_accepted'):
 
 
 def plot_acc_fdr(avg, filename, x_label='Fraction accepted'):
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 7))
     x = avg['x_grid']
 
     # True Acc & FDR
@@ -369,12 +380,12 @@ def plot_acc_fdr(avg, filename, x_label='Fraction accepted'):
                     alpha=0.15, color=C_TRUE)
 
     # ENGPE-TA Acc & FDR
-    ax.plot(x, avg['acc_est_mean'], color=C_EST, lw=1.8, label='ENGPE-TA Acc')
+    ax.plot(x, avg['acc_est_mean'], color=C_EST, lw=1.8, label='ENGPE Acc')
     ax.fill_between(x,
                     np.clip(avg['acc_est_mean'] - avg['acc_est_std'], 0, 1),
                     np.clip(avg['acc_est_mean'] + avg['acc_est_std'], 0, 1),
                     alpha=0.15, color=C_EST)
-    ax.plot(x, avg['fdr_est_mean'], color=C_EST, lw=1.5, ls='--', label='ENGPE-TA FDR')
+    ax.plot(x, avg['fdr_est_mean'], color=C_EST, lw=1.5, ls='--', label='ENGPE FDR')
     ax.fill_between(x,
                     np.clip(avg['fdr_est_mean'] - avg['fdr_est_std'], 0, 1),
                     np.clip(avg['fdr_est_mean'] + avg['fdr_est_std'], 0, 1),
@@ -383,14 +394,14 @@ def plot_acc_fdr(avg, filename, x_label='Fraction accepted'):
     ax.set_xlabel(x_label)
     ax.set_ylabel('Value')
     ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=9, loc='best', framealpha=0.9)
+    ax.legend(loc='best', framealpha=0.9)
     ax.grid(linestyle='--', alpha=0.4)
     plt.tight_layout()
     save_fig(fig, filename)
 
 
 def plot_pr_curve(avg, filename):
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 7))
     rec = avg['pr_recall']
 
     ax.plot(rec, avg['pr_true_mean'], color=C_TRUE, lw=1.8, label='True PR')
@@ -399,7 +410,7 @@ def plot_pr_curve(avg, filename):
                     np.clip(avg['pr_true_mean'] + avg['pr_true_std'], 0, 1),
                     alpha=0.15, color=C_TRUE)
 
-    ax.plot(rec, avg['pr_est_mean'], color=C_EST, lw=1.8, ls='--', label='ENGPE-TA PR')
+    ax.plot(rec, avg['pr_est_mean'], color=C_EST, lw=1.8, ls='--', label='ENGPE PR')
     ax.fill_between(rec,
                     np.clip(avg['pr_est_mean'] - avg['pr_est_std'], 0, 1),
                     np.clip(avg['pr_est_mean'] + avg['pr_est_std'], 0, 1),
@@ -409,7 +420,7 @@ def plot_pr_curve(avg, filename):
     ax.set_ylabel('Precision')
     ax.set_xlim(0, 1.02)
     ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=10)
+    ax.legend()
     ax.grid(linestyle='--', alpha=0.4)
     plt.tight_layout()
     save_fig(fig, filename)
@@ -417,10 +428,15 @@ def plot_pr_curve(avg, filename):
 
 # ── Compute averages and save plots ───────────────────────────────────────────
 
-# CIFAR-10-C: fraction accepted as x-axis (legacy format)
+# CIFAR-10-C
 avg_cifar = average_curves(curves_cifar, 'corruption', x_col='frac_accepted')
 plot_acc_fdr(avg_cifar,  'fig3_acc_fdr_cifar10c',  x_label='Fraction accepted')
 plot_pr_curve(avg_cifar, 'fig4_pr_cifar10c')
+
+# BCSS
+avg_bcss = average_curves(curves_bcss, 'tile', x_col='frac_accepted')
+plot_acc_fdr(avg_bcss,  'fig3_acc_fdr_bcss',  x_label='Fraction accepted')
+plot_pr_curve(avg_bcss, 'fig4_pr_bcss')
 
 # Entity13 — all test sets (logit threshold x-axis)
 avg_entity13_all = average_curves(curves_entity13_all, 'testset', x_col='logit_threshold')
@@ -436,6 +452,21 @@ plot_pr_curve(avg_entity13_corr, 'fig4_pr_entity13_corruptions')
 avg_entity13_best = average_curves(curves_entity13_best, 'testset', x_col='logit_threshold')
 plot_acc_fdr(avg_entity13_best,  'fig3_acc_fdr_entity13_best',  x_label='Logit threshold')
 plot_pr_curve(avg_entity13_best, 'fig4_pr_entity13_best')
+
+# Entity30
+avg_entity30 = average_curves(curves_entity30, 'testset', x_col='frac_accepted')
+plot_acc_fdr(avg_entity30,  'fig3_acc_fdr_entity30',  x_label='Fraction accepted')
+plot_pr_curve(avg_entity30, 'fig4_pr_entity30')
+
+# Living17
+avg_living17 = average_curves(curves_living17, 'testset', x_col='frac_accepted')
+plot_acc_fdr(avg_living17,  'fig3_acc_fdr_living17',  x_label='Fraction accepted')
+plot_pr_curve(avg_living17, 'fig4_pr_living17')
+
+# Nonliving26
+avg_nonliving26 = average_curves(curves_nonliving26, 'testset', x_col='frac_accepted')
+plot_acc_fdr(avg_nonliving26,  'fig3_acc_fdr_nonliving26',  x_label='Fraction accepted')
+plot_pr_curve(avg_nonliving26, 'fig4_pr_nonliving26')
 
 print('✓ Plots 3 & 4 done\n')
 print('All publication plots saved to:', os.path.abspath(OUT_DIR))
