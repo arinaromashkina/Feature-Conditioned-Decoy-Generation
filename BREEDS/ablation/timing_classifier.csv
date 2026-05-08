@@ -1,2 +1,2 @@
 config,seed,n_flows,encoder_dim,use_robust_norm,classifier_train_time_s,classifier_inference_ms_per_sample,classifier_n_params
-classifier (shared),42,-,-,-,,0.1651,24836058
+classifier (shared),42,-,-,-,,0.1401,24838622
