@@ -1051,19 +1051,29 @@ STRATEGY_COLORS = {
 }
 
 
-def build_error_vector_pool(train_scores, train_labels, num_classes, min_pool=30):
-    """Pool of full logit vectors where argmax==k AND label!=k (for NN strategy)."""
-    pred_classes = train_scores.argmax(axis=1)
+MAX_NN_POOL = 5000
+
+def build_error_vector_pool(train_scores, train_labels, num_classes,
+                            min_pool=30, max_pool_size=MAX_NN_POOL):
+    """Pool of full logit vectors for NN strategy, capped at max_pool_size per class."""
+    rng  = np.random.default_rng(0)
+    pred = train_scores.argmax(axis=1)
     pool = {}
     for k in range(num_classes):
-        mask  = (pred_classes == k) & (train_labels != k)
-        pool[k] = train_scores[mask] if mask.sum() >= min_pool \
-                  else train_scores[train_labels != k]
+        err_mask = (pred == k) & (train_labels != k)
+        vecs = train_scores[err_mask] if err_mask.sum() >= min_pool \
+               else train_scores[train_labels != k]
+        if len(vecs) > max_pool_size:
+            vecs = vecs[rng.choice(len(vecs), size=max_pool_size, replace=False)]
+        pool[k] = vecs
+        print(f"  NN pool class {k}: {len(vecs)} vectors")
     return pool
 
 
+NN_BATCH = 1024
+
 def _build_decoy_nearest_neighbor(sc_np, pool_error_vectors, rng, noise_std=0.0):
-    """NN decoy: find nearest training error vector in subspace excluding coord k."""
+    """NN decoy with batched distance computation to avoid OOM."""
     n_samples, n_classes = sc_np.shape
     pred_classes = sc_np.argmax(axis=1)
     dc_np        = sc_np.copy()
@@ -1075,15 +1085,17 @@ def _build_decoy_nearest_neighbor(sc_np, pool_error_vectors, rng, noise_std=0.0)
         pool_k = pool_error_vectors.get(k)
         if pool_k is None or len(pool_k) == 0:
             continue
-        samples_k      = sc_np[mask]
         compare_coords = all_coords[all_coords != k]
-        S_proj = samples_k[:, compare_coords]
-        V_proj = pool_k[:,   compare_coords]
-        S_sq   = (S_proj ** 2).sum(axis=1, keepdims=True)
-        V_sq   = (V_proj ** 2).sum(axis=1, keepdims=True)
-        dists  = np.maximum(S_sq + V_sq.T - 2.0 * (S_proj @ V_proj.T), 0.0)
-        nn_idx = dists.argmin(axis=1)
-        dc_np[mask, k] = pool_k[nn_idx, k]
+        S_proj = sc_np[mask][:, compare_coords]
+        V_proj = pool_k[:, compare_coords]
+        V_sq   = (V_proj ** 2).sum(axis=1)
+        best_idx = np.empty(S_proj.shape[0], dtype=np.intp)
+        for start in range(0, S_proj.shape[0], NN_BATCH):
+            end = min(start + NN_BATCH, S_proj.shape[0])
+            Sb = S_proj[start:end]
+            dists = (Sb ** 2).sum(1, keepdims=True) + V_sq[None, :] - 2.0 * (Sb @ V_proj.T)
+            best_idx[start:end] = np.maximum(dists, 0).argmin(axis=1)
+        dc_np[mask, k] = pool_k[best_idx, k]
     if noise_std > 0.0:
         dc_np = dc_np + rng.normal(0.0, noise_std, size=dc_np.shape)
     return dc_np
@@ -1094,8 +1106,9 @@ def apply_strategy(scores_np, pool_score, pool_error_vectors, strategy, noise_st
     _noise = noise_std if strategy in ('score_coord_noise', 'nearest_neighbor_noise') else 0.0
     if strategy in ('nearest_neighbor', 'nearest_neighbor_noise'):
         return _build_decoy_nearest_neighbor(scores_np, pool_error_vectors, rng, _noise)
-    else:
-        return _build_decoy_score_coord(scores_np, pool_score, rng)
+    dc = _build_decoy_score_coord(scores_np, pool_score, rng)
+    if _noise > 0: dc += rng.normal(0, _noise, dc.shape)
+    return dc
 
 
 def compute_fdr_acc_curves(scores_np, decoy_np, labels_np, pi0=0.0):
